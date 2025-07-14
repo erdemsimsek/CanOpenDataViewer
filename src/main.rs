@@ -2,11 +2,12 @@
 
 use eframe::{egui, NativeOptions};
 use std::process::Command;
-
+use std::path::PathBuf;
 
 enum AppView {
     SelectInterface,
     SelectNodeId,
+    SelectEDSFile,
     Main
 }
 struct MyApp {
@@ -15,6 +16,7 @@ struct MyApp {
     selected_can_interface: Option<String>,
     selected_node_id: Option<u8>,
     node_id_str : String,
+    eds_file_path : Option<PathBuf>,
 }
 
 
@@ -26,6 +28,7 @@ impl Default for MyApp {
             selected_can_interface: None,
             selected_node_id: None,
             node_id_str: String::new(),
+            eds_file_path: None,
         }
     }
 }
@@ -37,6 +40,7 @@ impl eframe::App for MyApp {
             match self.current_view {
                 AppView::SelectInterface => self.draw_interface_view(ui),
                 AppView::SelectNodeId => self.draw_node_id_view(ui),
+                AppView::SelectEDSFile => self.draw_eds_file_view(ui),
                 AppView::Main => self.draw_main_view(ui)
             }
         });
@@ -129,7 +133,55 @@ impl MyApp {
                         }
 
                         let is_start_enabled = self.selected_node_id.is_some();
-                        if ui.add_enabled(is_start_enabled, egui::Button::new("Start")).clicked() {
+                        if ui.add_enabled(is_start_enabled, egui::Button::new("Next →")).clicked() {
+                            self.current_view = AppView::SelectEDSFile;
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Draws the UI for selecting an EDS file using a centered window.
+    fn draw_eds_file_view(&mut self, ui: &mut egui::Ui) {
+        egui::Window::new("EDS File Selection")
+            .title_bar(false)
+            .resizable(false)
+            .collapsible(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ui.ctx(), |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.set_width(350.0); // A bit wider for file paths
+                    ui.heading("Step 3: Select EDS File");
+                    ui.label("(Optional)");
+                    ui.add_space(10.0);
+
+                    // Display the currently selected file path
+                    let file_path_text = if let Some(path) = &self.eds_file_path {
+                        path.display().to_string()
+                    } else {
+                        "No file selected".to_string()
+                    };
+                    ui.label(file_path_text);
+                    ui.add_space(10.0);
+
+                    // Button to open the native file dialog
+                    if ui.button("Browse...").clicked() {
+                        // Use rfd to pick a file
+                        let file = rfd::FileDialog::new()
+                            .add_filter("CANopen EDS", &["eds"]) // Filter for .eds files
+                            .pick_file();
+
+                        // Store the result
+                        self.eds_file_path = file;
+                    }
+                    ui.add_space(20.0);
+
+                    // Navigation buttons
+                    ui.horizontal(|ui| {
+                        if ui.button("← Back").clicked() {
+                            self.current_view = AppView::SelectNodeId;
+                        }
+                        if ui.button("Start").clicked() {
                             self.current_view = AppView::Main;
                         }
                     });
