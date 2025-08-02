@@ -1,8 +1,14 @@
 // main.rs
 
-use eframe::{egui, NativeOptions};
-use std::process::Command;
+mod communication;
+
+use communication::{Command, SdoAddress, Update};
+
+use eframe::{egui, App, NativeOptions};
+use std::process::Command as process_command;
 use std::path::PathBuf;
+use std::sync::mpsc::{Sender, Receiver};
+use std::sync::Arc;
 
 enum AppView {
     SelectInterface,
@@ -17,6 +23,9 @@ struct MyApp {
     selected_node_id: Option<u8>,
     node_id_str : String,
     eds_file_path : Option<PathBuf>,
+
+    command_tx: Option<Sender<Command>>,
+    update_rx: Option<Receiver<Update>>
 }
 
 
@@ -29,6 +38,9 @@ impl Default for MyApp {
             selected_node_id: None,
             node_id_str: String::new(),
             eds_file_path: None,
+
+            command_tx: None,
+            update_rx: None,
         }
     }
 }
@@ -182,6 +194,25 @@ impl MyApp {
                             self.current_view = AppView::SelectNodeId;
                         }
                         if ui.button("Start").clicked() {
+                            let (command_tx, command_rx) = std::sync::mpsc::channel();
+                            let (update_tx, update_rx) = std::sync::mpsc::channel();
+
+                            self.command_tx = Some(command_tx);
+                            self.update_rx = Some(update_rx);
+
+                            let can_interface = self.selected_can_interface.clone().unwrap();
+                            let node_id = self.selected_node_id.unwrap();
+                            let eds_file_path = self.eds_file_path.clone();
+
+                            std::thread::spawn(move || {
+                                communication::communication_thread_main(
+                                    command_rx,
+                                    update_tx,
+                                    can_interface,
+                                    node_id,
+                                    eds_file_path,
+                                );
+                            });
                             self.current_view = AppView::Main;
                         }
                     });
@@ -202,13 +233,15 @@ impl MyApp {
             ui.label(format!("Targeting Node ID: {}", node_id));
             ui.add_space(20.0);
             ui.label("This is where the data plots and tables will go.");
+
+            self.command_tx.as_ref().unwrap().send(Command::Connect).unwrap();
         }
     }
 }
 
 
 fn get_can_interfaces() -> Vec<String> {
-    let output = match Command::new("ip").arg("link").arg("show").output() {
+    let output = match process_command::new("ip").arg("link").arg("show").output() {
         Ok(output) => output,
         Err(_) => {
             // If the command fails (e.g., on Windows), return an empty list.
