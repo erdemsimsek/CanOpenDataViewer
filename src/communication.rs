@@ -1,9 +1,6 @@
-use std::net::Shutdown::Read;
 use std::sync::mpsc::{Receiver, Sender};
 use std::path::PathBuf;
-use canopen_rust::{data_type, debug};
 use configparser::ini::Ini;
-use std::collections::HashSet;
 use std::collections::BTreeMap;
 
 
@@ -22,7 +19,7 @@ pub struct SdoObject {
     pub sub_objects: BTreeMap<u8, SdoSubObject>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct SdoAddress {
     pub index: u16,
     pub sub_index: u8,
@@ -30,6 +27,7 @@ pub struct SdoAddress {
 
 #[derive(Debug)]
 pub enum Command {
+    FetchSdos,
     Connect,
     Subscribe {
         address: SdoAddress,
@@ -40,6 +38,7 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Update {
+    SdoList(BTreeMap<u16, SdoObject>),
     ConnectionSuccess(BTreeMap<u16, SdoObject>),
     ConnectionFailed(String),
     SdoData {
@@ -57,30 +56,27 @@ pub fn communication_thread_main(
     eds_file: Option<PathBuf>,
 ) {
 
-    match command_rx.recv() {
-        Ok(Command::Connect) => {
 
-            if let Some(path) = eds_file {
-                match search_for_readable_sdo(path) {
-                    Ok(sdo_groups) => {
-
-                        let _ = update_tx.send(Update::ConnectionSuccess(sdo_groups));
-                    },
-                    Err(err) => {
-                        let _ = update_tx.send(Update::ConnectionFailed(err));
+    for command in command_rx {
+        match command {
+            Command::FetchSdos => {
+                if let Some(path) = eds_file.as_ref() {
+                    match search_for_readable_sdo(path.clone()) {
+                        Ok(sdo_groups) => {
+                            let _ = update_tx.send(Update::SdoList(sdo_groups));
+                        },
+                        Err(_err) => {
+                            let _ = update_tx.send(Update::SdoList(BTreeMap::new()));
+                        }
                     }
                 }
-            }
-            else {
-                println!("No EDS file provided");
-
-            }
-        },
-        _ => {}
-    }
-
-    loop {
-
+                else {
+                    let _ = update_tx.send(Update::SdoList(BTreeMap::new()));
+                }
+            },
+            Command::Connect => {},
+            _ => {}
+        }
     }
 }
 
