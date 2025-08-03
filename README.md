@@ -61,7 +61,7 @@ This ensures the user is always presented with information in its most useful fo
 * **Plotting:** [egui_plot](https://crates.io/crates/egui_plot)
 * **CAN Interface:** [socketcan](https://crates.io/crates/socketcan) (for Linux)
 * **CANopen Protocol:** [canopen](https://crates.io/crates/canopen)
-* **Device Profile Parsing:** [rust-ini](https://crates.io/crates/rust-ini) (for EDS), [quick-xml](https://crates.io/crates/quick-xml) (for XDD)
+* **Device Profile Parsing:** [configparser](https://crates.io/crates/rust-ini) (for EDS)
 * **Logging:** [csv](https://crates.io/crates/csv)
 
 ## Getting Started
@@ -92,7 +92,7 @@ This ensures the user is always presented with information in its most useful fo
 
 ## Roadmap
 
-* [ ] 
+* []
 
 ## Contributing
 
