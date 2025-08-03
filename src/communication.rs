@@ -1,7 +1,9 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::path::PathBuf;
 use configparser::ini::Ini;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use rand::Rng;
+use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, task::JoinHandle};
 
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,22 @@ pub enum Update {
     },
 }
 
+async fn simulation_task(address: SdoAddress, interval_ms: u64, update_tx: Sender<Update>) {
+    println!("Starting simulation task for address {:?} with interval {} ms", &address, interval_ms);
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+
+
+    loop {
+        interval.tick().await;
+        let mut rng = rand::thread_rng();
+        let random_value = rng.gen_range(0..100);
+        let _ = update_tx.send(Update::SdoData {
+            address: address.clone(),
+            value: format!("{}", random_value),
+        });
+    }
+}
+
 // Make the main function for the thread public as well.
 pub fn communication_thread_main(
     command_rx: Receiver<Command>,
@@ -56,9 +74,12 @@ pub fn communication_thread_main(
     eds_file: Option<PathBuf>,
 ) {
 
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut subscription_handles: HashMap<SdoAddress, JoinHandle<()>> = HashMap::new();
 
     for command in command_rx {
         match command {
+            Command::Connect => {},
             Command::FetchSdos => {
                 if let Some(path) = eds_file.as_ref() {
                     match search_for_readable_sdo(path.clone()) {
@@ -74,7 +95,19 @@ pub fn communication_thread_main(
                     let _ = update_tx.send(Update::SdoList(BTreeMap::new()));
                 }
             },
-            Command::Connect => {},
+            Command::Subscribe { address, interval_ms } => {
+                println!("Subscribing to address {:?} with interval {} ms", &address, interval_ms);
+                let update_tx_clone = update_tx.clone();
+                let subscription_handle = rt.spawn(simulation_task(address.clone(), interval_ms, update_tx_clone));
+                subscription_handles.insert(address, subscription_handle);
+            },
+            Command::Unsubscribe(address) => {
+                println!("Unsubscribing from address {:?}", &address);
+                let subscription_handle = subscription_handles.remove(&address);
+                if let Some(subscription_handle) = subscription_handle {
+                    subscription_handle.abort();
+                }
+            }
             _ => {}
         }
     }

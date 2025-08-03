@@ -2,7 +2,7 @@
 
 mod communication;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Deref;
 use communication::{Command, Update, SdoAddress, SdoObject};
 
@@ -14,6 +14,8 @@ use egui_plot::{Plot, PlotPoints, Line};
 use chrono::Local;
 use std::sync::Arc;
 
+const PLOT_BUFFER_SIZE: usize = 500;
+
 enum AppView {
     SelectInterface,
     SelectNodeId,
@@ -24,7 +26,7 @@ enum AppView {
 #[derive(Debug, Clone)]
 struct SdoSubscription{
     interval_ms: u64,
-    plot_data: Vec<[f64; 2]>,
+    plot_data: VecDeque<[f64; 2]>,
 }
 struct ScreenshotInfo {
     filename: String,
@@ -98,6 +100,21 @@ impl eframe::App for MyApp {
             match update{
                 Update::SdoList(map) => {
                     self.sdo_data = Some(map);
+                },
+
+                Update::SdoData { address, value } => {
+                    // 1. Try to parse the incoming string value into a number.
+                    if let Ok(number_value) = value.parse::<f64>() {
+                        // 2. Find the subscription this data belongs to.
+                        if let Some(subscription) = self.subscriptions.get_mut(&address) {
+
+                            if subscription.plot_data.len() >= PLOT_BUFFER_SIZE {
+                                subscription.plot_data.pop_front();
+                            }
+                            let time = subscription.plot_data.back().map_or(0.0, |p| p[0] + 1.0);
+                            subscription.plot_data.push_back([time, number_value]);
+                        }
+                    }
                 }
                 _ => {
 
@@ -125,6 +142,8 @@ impl eframe::App for MyApp {
                 AppView::Main => self.draw_main_view(ui),
             }
         });
+
+        ctx.request_repaint();
     }
 }
 
@@ -376,6 +395,8 @@ impl MyApp {
                             .allow_scroll(false)
                             .height(250.0)
                             .width(ui.available_width())
+                            .x_axis_label("Sample No")
+                            .y_axis_label("Value")
                             .show(ui, |plot_ui| {
                                 // 2. Generate a unique color for the line based on its address.
                                 let color = Color32::from_rgb(
@@ -384,10 +405,12 @@ impl MyApp {
                                     (address.index as u8 ^ address.sub_index as u8).wrapping_mul(30),
                                 );
 
-                                let line = Line::new(PlotPoints::from(subscription.plot_data.clone()))
-                                    .name(&plot_title) // Use the title for the legend as well
-                                    .color(color);
+                                let points_vec: Vec<[f64; 2]> = subscription.plot_data.iter().cloned().collect();
 
+                                let line = Line::new(PlotPoints::from(points_vec))
+                                    .name(&plot_title)
+                                    .color(color);
+                                
                                 plot_ui.line(line);
                             });
 
@@ -439,7 +462,7 @@ impl MyApp {
                                 }
                                 self.subscriptions.insert(address.clone(), SdoSubscription {
                                     interval_ms,
-                                    plot_data: Vec::new(),
+                                    plot_data: VecDeque::new(),
                                 });
                                 self.modal_open_for = None; // Close the modal
                             }
