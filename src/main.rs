@@ -60,6 +60,8 @@ struct MyApp {
     // Managing the state of the pop-up configuration modal
     modal_open_for: Option<SdoAddress>,
     modal_interval_str: String,
+
+    sdo_search_query: String
 }
 
 
@@ -83,6 +85,8 @@ impl Default for MyApp {
 
             modal_open_for: None,
             modal_interval_str: String::new(),
+
+            sdo_search_query: String::new()
         }
     }
 }
@@ -309,26 +313,39 @@ impl MyApp {
     fn draw_sdo_list(&mut self, ui: &mut egui::Ui) {
         ui.heading("SDO List");
 
+        ui.horizontal(|ui| {
+           ui.label("Search:");
+            ui.text_edit_singleline(&mut self.sdo_search_query);
+        });
+        ui.separator();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             if let Some(sdo_data) = &self.sdo_data {
+                let query = self.sdo_search_query.to_lowercase();
                 for (index, sdo_object) in sdo_data {
-                    ui.collapsing(format!("{:#06X}: {}", index, &sdo_object.name), |ui| {
-                        for (sub_index, sub_object) in &sdo_object.sub_objects {
-                            let address = SdoAddress { index: *index, sub_index: *sub_index };
-                            // Change the label to a button
-                            let button_text = format!("Sub {}: {}", sub_index, &sub_object.name);
-                            if ui.button(button_text).clicked() {
-                                // When clicked, open the modal for this specific SDO sub-object
-                                self.modal_open_for = Some(address.clone());
-                                if let Some(sub) = self.subscriptions.get(&address) {
-                                    self.modal_interval_str = sub.interval_ms.to_string();
-                                } else {
-                                    self.modal_interval_str = "100".to_string();
-                                }
+                    let object_name_matches = sdo_object.name.to_lowercase().contains(&query);
+                    let any_sub_object_matches = sdo_object.sub_objects.values()
+                        .any(|sub| sub.name.to_lowercase().contains(&query));
 
+                    if query.is_empty() || object_name_matches || any_sub_object_matches {
+                        ui.collapsing(format!("{:#06X}: {}", index, &sdo_object.name), |ui| {
+                            for (sub_index, sub_object) in &sdo_object.sub_objects {
+                                let address = SdoAddress { index: *index, sub_index: *sub_index };
+                                // Change the label to a button
+                                let button_text = format!("Sub {}: {}", sub_index, &sub_object.name);
+                                if ui.button(button_text).clicked() {
+                                    // When clicked, open the modal for this specific SDO sub-object
+                                    self.modal_open_for = Some(address.clone());
+                                    if let Some(sub) = self.subscriptions.get(&address) {
+                                        self.modal_interval_str = sub.interval_ms.to_string();
+                                    } else {
+                                        self.modal_interval_str = "100".to_string();
+                                    }
+
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
                 }
             } else {
                 ui.label("Fetching SDO list...");
