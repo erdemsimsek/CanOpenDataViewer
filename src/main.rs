@@ -10,7 +10,7 @@ use eframe::{egui, NativeOptions, egui::Color32, egui::ColorImage};
 use std::process::Command as process_command;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, Receiver};
-use egui_plot::{Plot, PlotPoints, Line};
+use egui_plot::{Plot, PlotPoints, Line, Legend};
 use chrono::Local;
 use std::sync::Arc;
 
@@ -397,6 +397,7 @@ impl MyApp {
                             .width(ui.available_width())
                             .x_axis_label("Sample No")
                             .y_axis_label("Value")
+                            .legend(Legend::default())
                             .show(ui, |plot_ui| {
                                 // 2. Generate a unique color for the line based on its address.
                                 let color = Color32::from_rgb(
@@ -410,7 +411,7 @@ impl MyApp {
                                 let line = Line::new(PlotPoints::from(points_vec))
                                     .name(&plot_title)
                                     .color(color);
-                                
+
                                 plot_ui.line(line);
                             });
 
