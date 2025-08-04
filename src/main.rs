@@ -393,7 +393,7 @@ impl MyApp {
                             .legend(egui_plot::Legend::default())
                             .view_aspect(2.0)
                             .allow_scroll(false)
-                            .height(250.0)
+                            .height(350.0)
                             .width(ui.available_width())
                             .x_axis_label("Sample No")
                             .y_axis_label("Value")
@@ -420,7 +420,8 @@ impl MyApp {
                             let timestamp = now.format("%Y-%m-%d %H:%M:%S");
                             let info = ScreenshotInfo{
                                 filename: format!("{}_{}.png", plot_title.replace(":", "_"), timestamp),
-                                rect: plot_response.response.rect,
+                                // rect: plot_response.response.rect,
+                                rect: ui.min_rect(),
                             };
 
                             let user_data = egui::UserData::new(Arc::new(info));
