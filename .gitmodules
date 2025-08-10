@@ -1,0 +1,3 @@
+[submodule "canopen_demo_node/CANopenLinux"]
+	path = canopen_demo_node/CANopenLinux
+	url = git@github.com:CANopenNode/CANopenLinux.git

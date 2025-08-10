@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "compare": "cpp",
+        "eventfd.h": "c",
+        "co_error.h": "c"
+    }
+}
