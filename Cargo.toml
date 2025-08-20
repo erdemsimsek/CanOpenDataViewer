@@ -12,3 +12,4 @@ image = "0.25.1"
 chrono = "0.4.41"
 tokio = { version = "1.47.1", features = ["full"] }
 rand = "0.9.2"
+socketcan = "3.5.0"

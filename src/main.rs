@@ -1,6 +1,7 @@
 // main.rs
 
 mod communication;
+mod canopen;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Deref;
@@ -53,6 +54,8 @@ struct MyApp {
     command_tx: Option<Sender<Command>>,
     update_rx: Option<Receiver<Update>>,
 
+    connection_status: bool,
+
     sdo_requested : bool,
     sdo_data : Option<BTreeMap<u16, SdoObject>>,
 
@@ -79,6 +82,8 @@ impl Default for MyApp {
 
             command_tx: None,
             update_rx: None,
+
+            connection_status: false,
 
             sdo_requested: false,
             sdo_data: None,
@@ -309,6 +314,14 @@ impl MyApp {
 
     /// Draws the main application view.
     fn draw_main_view(&mut self, ui: &mut egui::Ui) {
+        if !self.connection_status {
+            if let Some(tx) = &self.command_tx {
+                tx.send(Command::Connect).unwrap();
+            }
+            self.connection_status = true;
+        }
+        
+        
         if !self.sdo_requested {
             if let Some(tx) = &self.command_tx {
                 tx.send(Command::FetchSdos).unwrap();

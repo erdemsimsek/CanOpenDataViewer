@@ -4,6 +4,11 @@ use configparser::ini::Ini;
 use std::collections::{BTreeMap, HashMap};
 use rand::Rng;
 use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, task::JoinHandle};
+use std::time::Duration;
+use crate::canopen::{
+    CANopenConnection, CANopenNodeHandle,
+    SdoRequest, SdoDataType, SdoError
+};
 
 
 #[derive(Debug, Clone)]
@@ -65,6 +70,38 @@ async fn simulation_task(address: SdoAddress, interval_ms: u64, update_tx: Sende
     }
 }
 
+async fn sdo_polling_task(
+    address: SdoAddress,
+    interval_ms: u64,
+    update_tx: Sender<Update>,
+    node_handle: CANopenNodeHandle,
+    data_type: SdoDataType,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
+
+    loop {
+        interval.tick().await;
+
+        let request = SdoRequest{
+            node_id: node_handle.node_id(),
+            index: address.index,
+            subindex: address.sub_index,
+            expected_type: data_type.clone(),
+        };
+
+        match node_handle.sdo_read(request).await {
+            Ok(sdo_response) => {
+                let value_string = sdo_response.data.to_string();
+                let _ = update_tx.send(Update::SdoData {
+                    address: address.clone(),
+                    value: value_string,
+                });
+            },
+            _ => {}
+        };
+    }
+}
+
 // Make the main function for the thread public as well.
 pub fn communication_thread_main(
     command_rx: Receiver<Command>,
@@ -76,10 +113,27 @@ pub fn communication_thread_main(
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut subscription_handles: HashMap<SdoAddress, JoinHandle<()>> = HashMap::new();
+    let mut connection: Option<CANopenConnection> = None;
+    let mut node_handle: Option<CANopenNodeHandle> = None;
+
 
     for command in command_rx {
         match command {
-            Command::Connect => {},
+            Command::Connect => {
+                match rt.block_on(async {
+                    let conn = CANopenConnection::new(&can_interface, Duration::from_millis(1000)).await?;
+                    let handle = conn.add_node(node_id).await?;
+                    Ok::<(CANopenConnection, CANopenNodeHandle), Box<dyn std::error::Error>>((conn, handle))
+                }){
+                    Ok((conn, handle)) => {
+                        connection = Some(conn);
+                        node_handle = Some(handle);
+                    },
+                    Err(err) => {
+                        let _ = update_tx.send(Update::ConnectionFailed(err.to_string()));
+                    }
+                };
+            },
             Command::FetchSdos => {
                 if let Some(path) = eds_file.as_ref() {
                     match search_for_readable_sdo(path.clone()) {
@@ -96,15 +150,30 @@ pub fn communication_thread_main(
                 }
             },
             Command::Subscribe { address, interval_ms } => {
-                println!("Subscribing to address {:?} with interval {} ms", &address, interval_ms);
-                let update_tx_clone = update_tx.clone();
-                let subscription_handle = rt.spawn(simulation_task(address.clone(), interval_ms, update_tx_clone));
-                subscription_handles.insert(address, subscription_handle);
+                if let Some(ref handle) = node_handle {
+                    println!("Subscribing to address {:?} with interval {} ms", &address, interval_ms);
+
+                    let update_tx_clone = update_tx.clone();
+                    let handle_clone = handle.clone();
+
+                    let subscription_handle = rt.spawn(sdo_polling_task(
+                        address.clone(),
+                        interval_ms,
+                        update_tx_clone,
+                        handle_clone,
+                        SdoDataType::Real32,
+                    ));
+
+                    subscription_handles.insert(address, subscription_handle);
+                } else {
+                    let _ = update_tx.send(Update::ConnectionFailed(
+                        "Not connected to CANopen network".to_string()
+                    ));
+                }
             },
             Command::Unsubscribe(address) => {
                 println!("Unsubscribing from address {:?}", &address);
-                let subscription_handle = subscription_handles.remove(&address);
-                if let Some(subscription_handle) = subscription_handle {
+                if let Some(subscription_handle) = subscription_handles.remove(&address) {
                     subscription_handle.abort();
                 }
             }
