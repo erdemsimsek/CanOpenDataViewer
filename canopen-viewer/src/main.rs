@@ -16,7 +16,7 @@ use std::process::Command as process_command;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, Receiver};
 use egui_plot::{Plot, PlotPoints, Line, Legend};
-use chrono::Local;
+use chrono::{Local, DateTime};
 use std::sync::Arc;
 
 const PLOT_BUFFER_SIZE: usize = 500;
@@ -29,9 +29,20 @@ enum AppView {
 }
 
 #[derive(Debug, Clone)]
+pub enum SubscriptionStatus {
+    Active,       // Currently receiving data
+    Error(String), // Error occurred (with error message)
+    Idle,         // Subscribed but no recent data
+}
+
+#[derive(Debug, Clone)]
 struct SdoSubscription{
     interval_ms: u64,
     plot_data: VecDeque<[f64; 2]>,
+    data_type: SdoDataType,
+    last_value: Option<String>,
+    last_timestamp: Option<DateTime<Local>>,
+    status: SubscriptionStatus,
 }
 struct ScreenshotInfo {
     filename: String,
@@ -152,11 +163,14 @@ impl eframe::App for MyApp {
                         value: value.clone(),
                     });
 
-                    // 1. Try to parse the incoming string value into a number.
-                    if let Ok(number_value) = value.parse::<f64>() {
-                        // 2. Find the subscription this data belongs to.
-                        if let Some(subscription) = self.subscriptions.get_mut(&address) {
+                    // Update subscription metadata
+                    if let Some(subscription) = self.subscriptions.get_mut(&address) {
+                        subscription.last_value = Some(value.clone());
+                        subscription.last_timestamp = Some(Local::now());
+                        subscription.status = SubscriptionStatus::Active;
 
+                        // 1. Try to parse the incoming string value into a number for plotting.
+                        if let Ok(number_value) = value.parse::<f64>() {
                             if subscription.plot_data.len() >= PLOT_BUFFER_SIZE {
                                 subscription.plot_data.pop_front();
                             }
@@ -185,6 +199,11 @@ impl eframe::App for MyApp {
                         sub_index: address.sub_index,
                         error: error.clone(),
                     });
+
+                    // Update subscription status to error
+                    if let Some(subscription) = self.subscriptions.get_mut(&address) {
+                        subscription.status = SubscriptionStatus::Error(error.clone());
+                    }
 
                     self.error_message = Some(format!("SDO Read Error [{:#06X}:{:02X}]: {}", address.index, address.sub_index, error));
                 }
@@ -472,6 +491,11 @@ impl MyApp {
             }
         });
 
+        // Bottom panel for subscription management
+        egui::TopBottomPanel::bottom("subscription_panel").show_inside(ui, |ui| {
+            self.draw_subscription_management(ui);
+        });
+
         // Creating panels. Left panel for SDO data, right panel for graphing.
         egui::SidePanel::left("sdo_list_panel").show_inside(ui, |ui| {
             self.draw_sdo_list(ui);
@@ -589,6 +613,113 @@ impl MyApp {
         });
     }
 
+    fn draw_subscription_management(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Active Subscriptions");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Stop All button
+                let stop_all_enabled = !self.subscriptions.is_empty();
+                if ui.add_enabled(stop_all_enabled, egui::Button::new("🛑 Stop All")).clicked() {
+                    // Send unsubscribe commands for all active subscriptions
+                    if let Some(tx) = &self.command_tx {
+                        for address in self.subscriptions.keys() {
+                            let _ = tx.send(Command::Unsubscribe(address.clone()));
+                        }
+                    }
+                    self.subscriptions.clear();
+                }
+
+                // Subscription statistics
+                let active_count = self.subscriptions.iter()
+                    .filter(|(_, sub)| matches!(sub.status, SubscriptionStatus::Active))
+                    .count();
+                let error_count = self.subscriptions.iter()
+                    .filter(|(_, sub)| matches!(sub.status, SubscriptionStatus::Error(_)))
+                    .count();
+
+                ui.label(format!("Total: {} | Active: {} | Errors: {}",
+                    self.subscriptions.len(), active_count, error_count));
+            });
+        });
+
+        ui.separator();
+
+        if self.subscriptions.is_empty() {
+            ui.label("No active subscriptions. Select an SDO from the list above to start monitoring.");
+        } else {
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                egui::Grid::new("subscription_grid")
+                    .num_columns(7)
+                    .spacing([10.0, 4.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        // Header row
+                        ui.label("Status");
+                        ui.label("Address");
+                        ui.label("Data Type");
+                        ui.label("Interval");
+                        ui.label("Last Value");
+                        ui.label("Last Update");
+                        ui.label("Actions");
+                        ui.end_row();
+
+                        // Data rows
+                        let mut to_remove = Vec::new();
+                        for (address, subscription) in &self.subscriptions {
+                            // Status indicator with color
+                            match &subscription.status {
+                                SubscriptionStatus::Active => {
+                                    ui.colored_label(Color32::from_rgb(0, 200, 0), "🟢 Active");
+                                },
+                                SubscriptionStatus::Error(err) => {
+                                    ui.colored_label(Color32::from_rgb(200, 0, 0), "🔴 Error")
+                                        .on_hover_text(err);
+                                },
+                                SubscriptionStatus::Idle => {
+                                    ui.colored_label(Color32::from_rgb(200, 200, 0), "🟡 Idle");
+                                },
+                            };
+
+                            // Address
+                            ui.label(format!("{:#06X}:{:02X}", address.index, address.sub_index));
+
+                            // Data type
+                            ui.label(format!("{:?}", subscription.data_type));
+
+                            // Interval
+                            ui.label(format!("{} ms", subscription.interval_ms));
+
+                            // Last value (truncate if too long)
+                            let value_text = subscription.last_value.as_ref()
+                                .map(|v| if v.len() > 20 { format!("{}...", &v[..17]) } else { v.clone() })
+                                .unwrap_or_else(|| "—".to_string());
+                            ui.label(value_text);
+
+                            // Last timestamp
+                            let timestamp_text = subscription.last_timestamp.as_ref()
+                                .map(|t| t.format("%H:%M:%S").to_string())
+                                .unwrap_or_else(|| "—".to_string());
+                            ui.label(timestamp_text);
+
+                            // Actions (Stop button)
+                            if ui.button("🛑 Stop").clicked() {
+                                if let Some(tx) = &self.command_tx {
+                                    let _ = tx.send(Command::Unsubscribe(address.clone()));
+                                }
+                                to_remove.push(address.clone());
+                            }
+                            ui.end_row();
+                        }
+
+                        // Remove stopped subscriptions
+                        for address in to_remove {
+                            self.subscriptions.remove(&address);
+                        }
+                    });
+            });
+        }
+    }
+
     fn draw_subscription_modal(&mut self, ui: &mut egui::Ui) {
         if let Some(address) = self.modal_open_for.clone() {
             let mut is_open = true;
@@ -626,12 +757,16 @@ impl MyApp {
                                     tx.send(Command::Subscribe {
                                         address: address.clone(),
                                         interval_ms,
-                                        data_type,
+                                        data_type: data_type.clone(),
                                     }).unwrap();
                                 }
                                 self.subscriptions.insert(address.clone(), SdoSubscription {
                                     interval_ms,
                                     plot_data: VecDeque::new(),
+                                    data_type,
+                                    last_value: None,
+                                    last_timestamp: None,
+                                    status: SubscriptionStatus::Idle,
                                 });
                                 self.modal_open_for = None; // Close the modal
                             }
