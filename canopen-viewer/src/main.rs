@@ -38,11 +38,13 @@ pub enum SubscriptionStatus {
 #[derive(Debug, Clone)]
 struct SdoSubscription{
     interval_ms: u64,
-    plot_data: VecDeque<[f64; 2]>,
+    plot_data: VecDeque<[f64; 2]>, // [timestamp_seconds, value]
     data_type: SdoDataType,
     last_value: Option<String>,
     last_timestamp: Option<DateTime<Local>>,
     status: SubscriptionStatus,
+    paused: bool,
+    start_time: DateTime<Local>, // Reference point for relative timestamps
 }
 struct ScreenshotInfo {
     filename: String,
@@ -165,17 +167,23 @@ impl eframe::App for MyApp {
 
                     // Update subscription metadata
                     if let Some(subscription) = self.subscriptions.get_mut(&address) {
+                        let now = Local::now();
                         subscription.last_value = Some(value.clone());
-                        subscription.last_timestamp = Some(Local::now());
+                        subscription.last_timestamp = Some(now);
                         subscription.status = SubscriptionStatus::Active;
 
-                        // 1. Try to parse the incoming string value into a number for plotting.
-                        if let Ok(number_value) = value.parse::<f64>() {
-                            if subscription.plot_data.len() >= PLOT_BUFFER_SIZE {
-                                subscription.plot_data.pop_front();
+                        // Only add to plot data if not paused
+                        if !subscription.paused {
+                            // Try to parse the incoming string value into a number for plotting.
+                            if let Ok(number_value) = value.parse::<f64>() {
+                                if subscription.plot_data.len() >= PLOT_BUFFER_SIZE {
+                                    subscription.plot_data.pop_front();
+                                }
+
+                                // Calculate seconds since start time for X-axis
+                                let elapsed_seconds = (now - subscription.start_time).num_milliseconds() as f64 / 1000.0;
+                                subscription.plot_data.push_back([elapsed_seconds, number_value]);
                             }
-                            let time = subscription.plot_data.back().map_or(0.0, |p| p[0] + 1.0);
-                            subscription.plot_data.push_back([time, number_value]);
                         }
                     }
                 }
@@ -274,7 +282,7 @@ impl MyApp {
                         ui.add_space(20.0);
 
                         let is_next_enabled = self.selected_can_interface.is_some();
-                        if ui.add_enabled(is_next_enabled, egui::Button::new("Next →")).clicked() {
+                        if ui.add_enabled(is_next_enabled, egui::Button::new("Next ➡")).clicked() {
                             self.current_view = AppView::SelectNodeId;
                         }
                     }
@@ -319,12 +327,12 @@ impl MyApp {
 
                     // Navigation buttons.
                     ui.horizontal(|ui| {
-                        if ui.button("← Back").clicked() {
+                        if ui.button("⬅ Back").clicked() {
                             self.current_view = AppView::SelectInterface;
                         }
 
                         let is_start_enabled = self.selected_node_id.is_some();
-                        if ui.add_enabled(is_start_enabled, egui::Button::new("Next →")).clicked() {
+                        if ui.add_enabled(is_start_enabled, egui::Button::new("Next ➡")).clicked() {
                             self.current_view = AppView::SelectEDSFile;
                         }
                     });
@@ -368,10 +376,10 @@ impl MyApp {
 
                     // Navigation buttons
                     ui.horizontal(|ui| {
-                        if ui.button("← Back").clicked() {
+                        if ui.button("⬅ Back").clicked() {
                             self.current_view = AppView::SelectNodeId;
                         }
-                        if ui.button("Start").clicked() {
+                        if ui.button("🚀Start").clicked() {
                             // Update and save configuration
                             self.config.can_interface = self.selected_can_interface.clone().unwrap();
                             self.config.node_id = self.selected_node_id.unwrap();
@@ -559,6 +567,10 @@ impl MyApp {
             if self.subscriptions.is_empty() {
                 ui.label("No active subscriptions. Select an SDO to start reading.");
             } else {
+
+                let mut addresses_to_clear = Vec::new();
+                let mut addresses_to_export = Vec::new();
+
                 for (address, subscription) in &self.subscriptions {
                     // 1. Use a Frame to visually group each plot and its title.
                     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -575,7 +587,7 @@ impl MyApp {
                             .allow_scroll(false)
                             .height(350.0)
                             .width(ui.available_width())
-                            .x_axis_label("Sample No")
+                            .x_axis_label("Time (seconds)")
                             .y_axis_label("Value")
                             .legend(Legend::default())
                             .show(ui, |plot_ui| {
@@ -595,19 +607,40 @@ impl MyApp {
                                 plot_ui.line(line);
                             });
 
-                        if ui.button("Save Plot").clicked() {
-                            let now = Local::now();
-                            let timestamp = now.format("%Y-%m-%d %H:%M:%S");
-                            let info = ScreenshotInfo{
-                                filename: format!("{}_{}.png", plot_title.replace(":", "_"), timestamp),
-                                // rect: plot_response.response.rect,
-                                rect: ui.min_rect(),
-                            };
+                        ui.horizontal(|ui| {
+                            if ui.button("📸 Capture Plot").clicked() {
+                                let now = Local::now();
+                                let timestamp = now.format("%Y-%m-%d %H:%M:%S");
+                                let info = ScreenshotInfo{
+                                    filename: format!("{}_{}.png", plot_title.replace(":", "_"), timestamp),
+                                    // rect: plot_response.response.rect,
+                                    rect: ui.min_rect(),
+                                };
 
-                            let user_data = egui::UserData::new(Arc::new(info));
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
-                        }
+                                let user_data = egui::UserData::new(Arc::new(info));
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
+                            }
+
+                            if ui.button("🗑 Clear").clicked() {
+                                addresses_to_clear.push(address.clone());
+                            }
+
+                            if ui.button("💾 Export to CSV").clicked() {
+                                addresses_to_export.push(address.clone());
+                            }
+                        });
                     });
+                }
+
+                for address in addresses_to_clear {
+                    if let Some(subscription) = self.subscriptions.get_mut(&address) {
+                        subscription.start_time = Local::now();
+                        subscription.plot_data.clear();
+                    }
+                }
+
+                for address in addresses_to_export {
+                    self.export_plot_data_to_csv(&address);
                 }
             }
         });
@@ -760,6 +793,7 @@ impl MyApp {
                                         data_type: data_type.clone(),
                                     }).unwrap();
                                 }
+                                let now = Local::now();
                                 self.subscriptions.insert(address.clone(), SdoSubscription {
                                     interval_ms,
                                     plot_data: VecDeque::new(),
@@ -767,6 +801,8 @@ impl MyApp {
                                     last_value: None,
                                     last_timestamp: None,
                                     status: SubscriptionStatus::Idle,
+                                    paused: false,
+                                    start_time: now,
                                 });
                                 self.modal_open_for = None; // Close the modal
                             }
@@ -795,6 +831,36 @@ impl MyApp {
 
             if let Err(e) = image_buffer.save(path) {
                 eprintln!("Failed to save screenshot: {}", e);
+            }
+        }
+    }
+
+    fn export_plot_data_to_csv(&mut self, address: &SdoAddress) {
+        if let Some(subscription) = self.subscriptions.get(address) {
+            let file_name = format!("plot_data_{:04X}_{:02X}.csv", address.index, address.sub_index);
+            if let Some(path) = rfd::FileDialog::new().set_file_name(&file_name).save_file() {
+                match csv::Writer::from_path(path) {
+                    Ok(mut writer) => {
+                        // Write header
+                        if let Err(e) = writer.write_record(&["Sample No", "Value"]) {
+                            eprintln!("Failed to write CSV header: {}", e);
+                        }
+
+                        // Write data
+                        for point in &subscription.plot_data {
+                            if let Err(e) = writer.write_record(&[point[0].to_string(), point[1].to_string()]) {
+                                eprintln!("Failed to write CSV record: {}", e);
+                            }
+                        }
+
+                        if let Err(e) = writer.flush() {
+                            eprintln!("Failed to flush CSV file: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to create CSV file: {}", e);
+                    }
+                }
             }
         }
     }
