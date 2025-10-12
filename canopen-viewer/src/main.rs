@@ -4,8 +4,8 @@ mod communication;
 mod canopen;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::ops::Deref;
 use communication::{Command, Update, SdoAddress, SdoObject};
+use canopen_common::SdoDataType;
 
 use eframe::{egui, NativeOptions, egui::Color32, egui::ColorImage};
 use std::process::Command as process_command;
@@ -32,15 +32,6 @@ struct SdoSubscription{
 struct ScreenshotInfo {
     filename: String,
     rect: egui::Rect,
-}
-
-impl ScreenshotInfo {
-    fn new(file_name: String, rect: egui::Rect) -> Self {
-        Self {
-            filename: file_name,
-            rect,
-        }
-    }
 }
 
 struct MyApp {
@@ -402,7 +393,7 @@ impl MyApp {
                         ui.label(&plot_title);
                         ui.separator();
 
-                        let plot_response = Plot::new(plot_id)
+                        Plot::new(plot_id)
                             .legend(egui_plot::Legend::default())
                             .view_aspect(2.0)
                             .allow_scroll(false)
@@ -472,8 +463,19 @@ impl MyApp {
                         });
                         if ui.button("Start Reading").clicked() {
                             if let Ok(interval_ms) = self.modal_interval_str.parse::<u64>() {
+                                // Look up the data type from the EDS
+                                let data_type = self.sdo_data.as_ref()
+                                    .and_then(|sdo_map| sdo_map.get(&address.index))
+                                    .and_then(|sdo_object| sdo_object.sub_objects.get(&address.sub_index))
+                                    .and_then(|sub_object| SdoDataType::from_eds_type(&sub_object.data_type))
+                                    .unwrap_or(SdoDataType::Real32); // Fallback to Real32 if type unknown
+
                                 if let Some(tx) = &self.command_tx {
-                                    tx.send(Command::Subscribe { address: address.clone(), interval_ms }).unwrap();
+                                    tx.send(Command::Subscribe {
+                                        address: address.clone(),
+                                        interval_ms,
+                                        data_type,
+                                    }).unwrap();
                                 }
                                 self.subscriptions.insert(address.clone(), SdoSubscription {
                                     interval_ms,

@@ -3,16 +3,17 @@ use socketcan::{CanSocket, Socket, CanFrame, StandardId, EmbeddedFrame};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use std::error::Error;
 use std::fmt;
 
-use canopen_common::{SdoRequest, SdoResponse, SdoError, create_sdo_request_frame, parse_sdo_response};
+use canopen_common::{SdoRequest, SdoResponse, SdoError, parse_sdo_response};
 
 #[derive(Debug)]
 pub enum CANopenError {
     SocketError(String),
+    #[allow(dead_code)]  // Reserved for future use
     NodeNotConnected(u8),
     RequestFailed(String),
 }
@@ -47,6 +48,7 @@ enum ConnectionMessage {
         node_id: u8,
         response_tx: oneshot::Sender<Result<(), CANopenError>>,
     },
+    #[allow(dead_code)]  // Reserved for future cleanup functionality
     RemoveNode {
         node_id: u8,
         response_tx: oneshot::Sender<Result<(), CANopenError>>,
@@ -63,7 +65,6 @@ struct PendingSdoRequest {
 
 /// Per-node state management
 struct NodeState {
-    node_id: u8,
     // Queue of pending SDO requests (FIFO)
     pending_requests: std::collections::VecDeque<PendingSdoRequest>,
     // Currently active request (if any)
@@ -73,9 +74,8 @@ struct NodeState {
 }
 
 impl NodeState {
-    fn new(node_id: u8, timeout: Duration) -> Self {
+    fn new(_node_id: u8, timeout: Duration) -> Self {
         Self {
-            node_id,
             pending_requests: std::collections::VecDeque::new(),
             active_request: None,
             timeout,

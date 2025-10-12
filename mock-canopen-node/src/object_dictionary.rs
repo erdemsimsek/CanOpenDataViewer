@@ -92,7 +92,7 @@ impl ObjectDictionary {
             0x01,
             || {
                 let mut rng = rand::rng();
-                let temp: f32 = rng.gen_range(20.0..30.0); // Random temperature between 20-30°C
+                let temp: f32 = rng.random_range(20.0..30.0); // Random temperature between 20-30°C
                 temp.to_le_bytes().to_vec()
             },
             SdoDataType::Real32,
@@ -104,7 +104,7 @@ impl ObjectDictionary {
             0x02,
             || {
                 let mut rng = rand::rng();
-                let pressure: f32 = rng.gen_range(95.0..105.0); // Random pressure 95-105 kPa
+                let pressure: f32 = rng.random_range(95.0..105.0); // Random pressure 95-105 kPa
                 pressure.to_le_bytes().to_vec()
             },
             SdoDataType::Real32,
@@ -132,7 +132,7 @@ impl ObjectDictionary {
             0x01,
             || {
                 let mut rng = rand::rng();
-                let voltage: f32 = rng.gen_range(11.5..12.5); // Random voltage 11.5-12.5V
+                let voltage: f32 = rng.random_range(11.5..12.5); // Random voltage 11.5-12.5V
                 voltage.to_le_bytes().to_vec()
             },
             SdoDataType::Real32,
@@ -144,7 +144,7 @@ impl ObjectDictionary {
             0x02,
             || {
                 let mut rng = rand::rng();
-                let current: f32 = rng.gen_range(0.5..5.0); // Random current 0.5-5.0A
+                let current: f32 = rng.random_range(0.5..5.0); // Random current 0.5-5.0A
                 current.to_le_bytes().to_vec()
             },
             SdoDataType::Real32,
@@ -162,7 +162,7 @@ impl ObjectDictionary {
             0x01,
             || {
                 let mut rng = rand::rng();
-                let rpm: i32 = rng.gen_range(1000..3000); // Random RPM 1000-3000
+                let rpm: i32 = rng.random_range(1000..3000); // Random RPM 1000-3000
                 rpm.to_le_bytes().to_vec()
             },
             SdoDataType::Int32,

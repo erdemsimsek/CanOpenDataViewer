@@ -1,11 +1,11 @@
 //! SDO Server implementation for responding to SDO upload requests
 
 use socketcan::{CanFrame, StandardId, EmbeddedFrame};
-use canopen_common::{SdoDataType, SdoCommand};
+use canopen_common::SdoDataType;
 use crate::object_dictionary::ObjectDictionary;
 
 pub struct SdoServer {
-    node_id: u8,
+    _node_id: u8,  // Stored for potential future use (logging, multi-node support)
     object_dict: ObjectDictionary,
     request_cob_id: u16,  // 0x600 + node_id
     response_cob_id: u16, // 0x580 + node_id
@@ -14,7 +14,7 @@ pub struct SdoServer {
 impl SdoServer {
     pub fn new(node_id: u8, object_dict: ObjectDictionary) -> Self {
         Self {
-            node_id,
+            _node_id: node_id,
             object_dict,
             request_cob_id: 0x600 + node_id as u16,
             response_cob_id: 0x580 + node_id as u16,

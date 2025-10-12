@@ -1,7 +1,6 @@
 // sdo.rs - Updated for the new connection architecture
-use socketcan::{CanSocket, Socket, CanFrame, StandardId};
+use socketcan::{CanFrame, StandardId};
 use socketcan::EmbeddedFrame as Frame;
-use std::time::{Duration, Instant};
 use std::error::Error;
 use std::fmt;
 
@@ -24,17 +23,7 @@ pub enum SdoCommand {
 }
 
 impl SdoCommand {
-    fn from_u8(value: u8) -> Option<Self> {
-        match value & 0xE0 {  // Mask the command specifier bits
-            0x40 => Some(Self::InitiateUploadRequest),
-            0x60 => Some(Self::UploadSegmentRequest),
-            0x00 => Some(Self::UploadSegmentResponse),
-            0x80 => Some(Self::AbortTransfer),
-            _ => None,
-        }
-    }
-
-    fn is_expedited_response(value: u8) -> bool {
+    pub(crate) fn is_expedited_response(value: u8) -> bool {
         (value & 0xE0) == 0x40 && (value & 0x02) != 0
     }
 }
@@ -66,15 +55,6 @@ impl SdoDataType {
             "0x0009" | "9" => Some(Self::VisibleString),
             "0x000A" | "10" => Some(Self::OctetString),
             _ => None,
-        }
-    }
-
-    fn size_bytes(&self) -> Option<usize> {
-        match self {
-            Self::UInt8 | Self::Int8 => Some(1),
-            Self::UInt16 | Self::Int16 => Some(2),
-            Self::UInt32 | Self::Int32 | Self::Real32 => Some(4),
-            Self::VisibleString | Self::OctetString => None, // Variable length
         }
     }
 }

@@ -2,17 +2,17 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::path::PathBuf;
 use configparser::ini::Ini;
 use std::collections::{BTreeMap, HashMap};
-use rand::Rng;
-use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, task::JoinHandle};
+use tokio::task::JoinHandle;
 use std::time::Duration;
 use crate::canopen::{
     CANopenConnection, CANopenNodeHandle,
-    SdoRequest, SdoDataType, SdoError
+    SdoRequest, SdoDataType
 };
 
 
 #[derive(Debug, Clone)]
 pub struct SdoSubObject {
+    #[allow(dead_code)]  // Stored from EDS for reference
     pub sub_index: u8,
     pub name: String,
     pub data_type: String,
@@ -20,6 +20,7 @@ pub struct SdoSubObject {
 
 #[derive(Debug, Clone)]
 pub struct SdoObject {
+    #[allow(dead_code)]  // Used internally by BTreeMap, needed for EDS parsing
     pub index: u16,
     pub name: String,
     /// We use a BTreeMap to keep sub-objects automatically sorted by their sub_index (the u8 key).
@@ -29,6 +30,7 @@ pub struct SdoObject {
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub struct SdoAddress {
     pub index: u16,
+    #[allow(dead_code)]  // Used in HashMap key, accessed via pattern matching
     pub sub_index: u8,
 }
 
@@ -39,6 +41,7 @@ pub enum Command {
     Subscribe {
         address: SdoAddress,
         interval_ms: u64,
+        data_type: SdoDataType,
     },
     Unsubscribe(SdoAddress),
 }
@@ -46,28 +49,14 @@ pub enum Command {
 #[derive(Debug)]
 pub enum Update {
     SdoList(BTreeMap<u16, SdoObject>),
+    #[allow(dead_code)]  // TODO: Will be used in Priority 1 fixes for connection status
     ConnectionSuccess(BTreeMap<u16, SdoObject>),
+    #[allow(dead_code)]  // TODO: Will be used in Priority 1 fixes for error reporting
     ConnectionFailed(String),
     SdoData {
         address: SdoAddress,
         value: String,
     },
-}
-
-async fn simulation_task(address: SdoAddress, interval_ms: u64, update_tx: Sender<Update>) {
-    println!("Starting simulation task for address {:?} with interval {} ms", &address, interval_ms);
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(interval_ms));
-
-
-    loop {
-        interval.tick().await;
-        let mut rng = rand::thread_rng();
-        let random_value = rng.gen_range(0..100);
-        let _ = update_tx.send(Update::SdoData {
-            address: address.clone(),
-            value: format!("{}", random_value),
-        });
-    }
 }
 
 async fn sdo_polling_task(
@@ -113,7 +102,8 @@ pub fn communication_thread_main(
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut subscription_handles: HashMap<SdoAddress, JoinHandle<()>> = HashMap::new();
-    let mut connection: Option<CANopenConnection> = None;
+    // Keep connection alive - it owns the background CAN reader task
+    let mut _connection_handle: Option<CANopenConnection> = None;
     let mut node_handle: Option<CANopenNodeHandle> = None;
 
 
@@ -126,7 +116,7 @@ pub fn communication_thread_main(
                     Ok::<(CANopenConnection, CANopenNodeHandle), Box<dyn std::error::Error>>((conn, handle))
                 }){
                     Ok((conn, handle)) => {
-                        connection = Some(conn);
+                        _connection_handle = Some(conn);
                         node_handle = Some(handle);
                     },
                     Err(err) => {
@@ -149,7 +139,7 @@ pub fn communication_thread_main(
                     let _ = update_tx.send(Update::SdoList(BTreeMap::new()));
                 }
             },
-            Command::Subscribe { address, interval_ms } => {
+            Command::Subscribe { address, interval_ms, data_type } => {
                 if let Some(ref handle) = node_handle {
                     println!("Subscribing to address {:?} with interval {} ms", &address, interval_ms);
 
@@ -161,7 +151,7 @@ pub fn communication_thread_main(
                         interval_ms,
                         update_tx_clone,
                         handle_clone,
-                        SdoDataType::Real32,
+                        data_type,
                     ));
 
                     subscription_handles.insert(address, subscription_handle);
@@ -177,7 +167,6 @@ pub fn communication_thread_main(
                     subscription_handle.abort();
                 }
             }
-            _ => {}
         }
     }
 }
