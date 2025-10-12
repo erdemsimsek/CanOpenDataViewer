@@ -1,7 +1,22 @@
 # CANopen Real-time Monitor & Plotter
 
+A high-performance, real-time CANopen diagnostics tool written in Rust, featuring dynamic plotting and configurable SDO polling.
 
-A high-performance, real-time CANopen diagnostics tool written in Rust, featuring dynamic plotting, configurable SDO polling, and selective TPDO monitoring.
+## 📁 Project Structure
+
+This is a Rust workspace containing multiple crates:
+
+```
+CanOpenDataViewer/
+├── canopen-viewer/          # Main GUI application
+├── canopen-common/          # Shared CANopen protocol library
+├── mock-canopen-node/       # Mock CANopen node for testing
+└── examples/                # Example binaries and EDS files
+```
+
+- **canopen-viewer**: The main application with GUI built using `egui`
+- **canopen-common**: Shared library for SDO protocol (used by both viewer and mock node)
+- **mock-canopen-node**: Simulated CANopen device for testing without real hardware
 
 
 ## Core Features
@@ -81,14 +96,36 @@ This ensures the user is always presented with information in its most useful fo
 
 1.  Clone the repository:
     ```bash
-    git clone [https://github.com/erdemsimsek/CanOpenDataViewer.git](https://github.com/erdemsimsek/CanOpenDataViewer.git)
+    git clone https://github.com/erdemsimsek/CanOpenDataViewer.git
     cd CanOpenDataViewer
     ```
 
-2.  Build and run the application:
+2.  Build the workspace:
     ```bash
-    cargo run --release
+    # Build everything
+    cargo build --workspace --release
+
+    # Or build just the viewer
+    cargo build -p canopen-viewer --release
     ```
+
+3.  Run the mock node (for testing without hardware):
+    ```bash
+    # Terminal 1: Start mock CANopen node
+    cargo run -p mock-canopen-node --release -- --interface vcan0 --node-id 4
+    ```
+
+4.  Run the viewer:
+    ```bash
+    # Terminal 2: Start the viewer application
+    cargo run -p canopen-viewer --release
+    ```
+
+    Then in the GUI:
+    - Select CAN interface: `vcan0`
+    - Enter Node ID: `4`
+    - Select EDS file (or skip for testing)
+    - Click "Start" and subscribe to SDOs
 
 ## Roadmap
 

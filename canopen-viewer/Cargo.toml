@@ -1,0 +1,21 @@
+[package]
+name = "canopen-viewer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Use workspace dependencies
+socketcan = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+
+# UI dependencies
+configparser = "3.1.0"
+eframe = "0.31.0"
+rfd = "0.15.4"
+egui_plot = "0.31.0"
+image = "0.25.1"
+chrono = "0.4.41"
+
+# This will use the shared CANopen protocol code
+canopen-common = { path = "../canopen-common" }

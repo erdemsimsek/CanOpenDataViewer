@@ -1,15 +1,17 @@
-[package]
-name = "CanOpenDataViewer"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "2"
+members = [
+    "canopen-viewer",
+    "canopen-common",
+    "mock-canopen-node",
+]
 
-[dependencies]
-configparser = "3.1.0"
-eframe = "0.31.0"
-rfd = "0.15.4"
-egui_plot = "0.31.0"
-image = "0.25.1"
-chrono = "0.4.41"
+# Shared dependencies across workspace (optional but reduces duplication)
+[workspace.dependencies]
+socketcan = "3.5.0"
 tokio = { version = "1.47.1", features = ["full"] }
 rand = "0.9.2"
-socketcan = "3.5.0"
+serde = { version = "1.0", features = ["derive"] }
+
+# This is now a workspace root, not a package
+# The actual binaries are in the member crates

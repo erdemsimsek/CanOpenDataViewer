@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use std::error::Error;
 use std::fmt;
 
-use crate::canopen::sdo::{SdoRequest, SdoResponse, SdoError, create_sdo_request_frame, parse_sdo_response};
+use canopen_common::{SdoRequest, SdoResponse, SdoError, create_sdo_request_frame, parse_sdo_response};
 
 #[derive(Debug)]
 pub enum CANopenError {
