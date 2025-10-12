@@ -23,6 +23,8 @@ CanOpenDataViewer/
 
 * **Real-time Plotting:** Visualize numeric TPDO and SDO data as it arrives from the CAN bus using a smooth, high-performance plot.
 * **Configurable SDO Polling:** Select any SDO from a device's Object Dictionary, set a custom polling rate for each, and see the values plotted or logged in real-time.
+* **Node Health Monitoring:** Automatic health checks verify that the CANopen node is alive by periodically reading the mandatory Device Type object (0x1000:00). Detects node disconnection within 4-6 seconds and updates the UI accordingly.
+* **Connection Status & Error Reporting:** Clear visual indicators show whether the node is connected (green) or disconnected (red). All connection failures and SDO read errors are displayed in dismissible error banners with detailed messages.
 * **Selective TPDO Monitoring:** The UI automatically lists all available Transmit-PDOs from a device profile. Simply check the ones you want to monitor.
 * **Intelligent Data Handling:**
     * **Numeric** PDO data is automatically sent to the real-time plot.
@@ -66,8 +68,12 @@ This ensures the user is always presented with information in its most useful fo
 3.  **Configure Monitoring:**
     * For **TPDOs**, the user simply checks a box next to each PDO they wish to monitor.
     * For **SDOs**, the user selects an SDO and enters a polling interval in milliseconds (e.g., `250ms`).
-4.  **Start Session:** The user clicks "Connect". The CAN thread starts, begins polling the configured SDOs at their specified rates, and listens for all incoming TPDOs.
-5.  **View Data:** As messages arrive, the application checks if they are on the user's monitoring list and handles them according to the design philosophy: plotting numeric data and logging everything else.
+4.  **Start Session:** The user clicks "Start". The CAN thread establishes the connection and begins health monitoring.
+5.  **Monitor Connection:** The application automatically checks node health every 2 seconds by reading the Device Type object (0x1000:00). The UI displays:
+    * **Green "● Connected"** when the node responds to health checks
+    * **Red "● Disconnected"** when the node stops responding (after 2 consecutive failures)
+    * **Error banners** for connection failures or SDO read errors (click "✖" to dismiss)
+6.  **View Data:** As messages arrive, the application checks if they are on the user's monitoring list and handles them according to the design philosophy: plotting numeric data and logging everything else.
 
 ## Technology Stack
 
@@ -124,8 +130,68 @@ This ensures the user is always presented with information in its most useful fo
     Then in the GUI:
     - Select CAN interface: `vcan0`
     - Enter Node ID: `4`
-    - Select EDS file (or skip for testing)
-    - Click "Start" and subscribe to SDOs
+    - Select EDS file: `examples/mock_node.eds` (for testing with mock node)
+    - Click "Start"
+    - **You should see:** Green "● Connected" status in the top panel
+    - Subscribe to SDOs via the "Subscribe to SDO" button
+    - **Try it:** Stop the mock node (Ctrl+C in Terminal 1) and watch the status change to red "● Disconnected" within 4-6 seconds
+
+## Troubleshooting
+
+### "Network is down (os error 100)" or Connection Failed
+
+**Problem:** Error banner appears immediately after clicking "Start" with message about network being down.
+
+**Solution:**
+1. Check if the CAN interface exists and is UP:
+   ```bash
+   ip link show vcan0
+   ```
+
+2. If the interface doesn't exist or is DOWN, set it up:
+   ```bash
+   sudo modprobe vcan
+   sudo ip link add dev vcan0 type vcan
+   sudo ip link set up vcan0
+   ```
+
+3. Verify the interface is UP:
+   ```bash
+   ip link show vcan0
+   # Should show: "vcan0: <NOARP,UP,LOWER_UP> ..."
+   ```
+
+### Connection Shows "Disconnected" Even Though Mock Node is Running
+
+**Problem:** The status indicator shows red "● Disconnected" even when the mock node is running.
+
+**Possible causes:**
+1. **Wrong Node ID:** Ensure the Node ID in the viewer matches the mock node's `--node-id` parameter (default: 4)
+2. **Wrong Interface:** Ensure both applications are using the same CAN interface (e.g., `vcan0`)
+3. **Mock Node Crashed:** Check Terminal 1 for errors in the mock node output
+4. **Node Missing 0x1000:00:** The health check reads Device Type (0x1000:00), which must exist in the node's object dictionary
+
+### SDO Read Errors
+
+**Problem:** Error banner shows "SDO Read Error: 0xXXXX:YY - request failed: sdo request timeout"
+
+**Possible causes:**
+1. **Object doesn't exist:** The SDO address may not be implemented in the node
+2. **Node stopped responding:** Check if the mock node is still running
+3. **Wrong data type:** The data type selected in the subscription doesn't match the object's actual type in the EDS file
+
+**Solution:**
+- Verify the object exists in the EDS file and is marked as readable (`accesstype=ro` or `accesstype=rw`)
+- Check that the mock node is still running and hasn't crashed
+- Ensure the data type matches what's specified in the EDS file
+
+### Application Freezes or Unresponsive
+
+**Problem:** The UI becomes unresponsive or freezes.
+
+**This shouldn't happen!** The application is designed with a non-blocking UI architecture. If you encounter this:
+1. Check CPU usage - the application should use minimal CPU when idle
+2. Report the issue with steps to reproduce at: https://github.com/erdemsimsek/CanOpenDataViewer/issues
 
 ## Roadmap
 

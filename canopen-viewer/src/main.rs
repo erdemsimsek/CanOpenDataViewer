@@ -46,6 +46,7 @@ struct MyApp {
     update_rx: Option<Receiver<Update>>,
 
     connection_status: bool,
+    connection_requested: bool,
 
     sdo_requested : bool,
     sdo_data : Option<BTreeMap<u16, SdoObject>>,
@@ -57,7 +58,10 @@ struct MyApp {
     modal_open_for: Option<SdoAddress>,
     modal_interval_str: String,
 
-    sdo_search_query: String
+    sdo_search_query: String,
+
+    // Error reporting
+    error_message: Option<String>,
 }
 
 
@@ -75,6 +79,7 @@ impl Default for MyApp {
             update_rx: None,
 
             connection_status: false,
+            connection_requested: false,
 
             sdo_requested: false,
             sdo_data: None,
@@ -84,7 +89,9 @@ impl Default for MyApp {
             modal_open_for: None,
             modal_interval_str: String::new(),
 
-            sdo_search_query: String::new()
+            sdo_search_query: String::new(),
+
+            error_message: None,
         }
     }
 }
@@ -111,6 +118,16 @@ impl eframe::App for MyApp {
                             subscription.plot_data.push_back([time, number_value]);
                         }
                     }
+                }
+                Update::ConnectionFailed(error) => {
+                    self.error_message = Some(format!("Connection Error: {}", error));
+                    self.connection_status = false;
+                }
+                Update::ConnectionStatus(is_alive) => {
+                    self.connection_status = is_alive;
+                }
+                Update::SdoReadError { address, error } => {
+                    self.error_message = Some(format!("SDO Read Error [{:#06X}:{:02X}]: {}", address.index, address.sub_index, error));
                 }
                 _ => {
 
@@ -305,20 +322,55 @@ impl MyApp {
 
     /// Draws the main application view.
     fn draw_main_view(&mut self, ui: &mut egui::Ui) {
-        if !self.connection_status {
+        // Request connection only once at startup
+        if !self.connection_requested {
             if let Some(tx) = &self.command_tx {
                 tx.send(Command::Connect).unwrap();
             }
-            self.connection_status = true;
+            self.connection_requested = true;
         }
-        
-        
+
         if !self.sdo_requested {
             if let Some(tx) = &self.command_tx {
                 tx.send(Command::FetchSdos).unwrap();
                 self.sdo_requested = true;
             }
         }
+
+        // Top panel for status and error display
+        egui::TopBottomPanel::top("status_panel").show_inside(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Connection status indicator
+                let status_color = if self.connection_status {
+                    Color32::from_rgb(0, 200, 0) // Green
+                } else {
+                    Color32::from_rgb(200, 0, 0) // Red
+                };
+                let status_text = if self.connection_status { "● Connected" } else { "● Disconnected" };
+                ui.colored_label(status_color, status_text);
+
+                ui.separator();
+
+                // Show interface and node ID info
+                if let Some(interface) = &self.selected_can_interface {
+                    ui.label(format!("Interface: {}", interface));
+                }
+                if let Some(node_id) = self.selected_node_id {
+                    ui.label(format!("Node ID: {}", node_id));
+                }
+            });
+
+            // Error banner
+            if let Some(error_msg) = self.error_message.clone() {
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.colored_label(Color32::from_rgb(255, 100, 100), format!("⚠ {}", error_msg));
+                    if ui.button("✖").clicked() {
+                        self.error_message = None; // Clear error on click
+                    }
+                });
+            }
+        });
 
         // Creating panels. Left panel for SDO data, right panel for graphing.
         egui::SidePanel::left("sdo_list_panel").show_inside(ui, |ui| {

@@ -49,13 +49,17 @@ pub enum Command {
 #[derive(Debug)]
 pub enum Update {
     SdoList(BTreeMap<u16, SdoObject>),
-    #[allow(dead_code)]  // TODO: Will be used in Priority 1 fixes for connection status
+    #[allow(dead_code)]  // TODO: Will be used for successful connection notifications
     ConnectionSuccess(BTreeMap<u16, SdoObject>),
-    #[allow(dead_code)]  // TODO: Will be used in Priority 1 fixes for error reporting
     ConnectionFailed(String),
+    ConnectionStatus(bool),  // true = node alive, false = node not responding
     SdoData {
         address: SdoAddress,
         value: String,
+    },
+    SdoReadError {
+        address: SdoAddress,
+        error: String,
     },
 }
 
@@ -86,8 +90,54 @@ async fn sdo_polling_task(
                     value: value_string,
                 });
             },
-            _ => {}
+            Err(err) => {
+                let _ = update_tx.send(Update::SdoReadError {
+                    address: address.clone(),
+                    error: err.to_string(),
+                });
+            }
         };
+    }
+}
+
+/// Health check task that periodically reads Device Type (0x1000:00) to verify node is alive
+async fn health_check_task(
+    update_tx: Sender<Update>,
+    node_handle: CANopenNodeHandle,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+    let mut consecutive_failures = 0;
+    const MAX_FAILURES: u32 = 2; // Mark disconnected after 2 consecutive failures
+
+    loop {
+        interval.tick().await;
+
+        // Read mandatory Device Type object (0x1000:00)
+        let request = SdoRequest {
+            node_id: node_handle.node_id(),
+            index: 0x1000,
+            subindex: 0x00,
+            expected_type: SdoDataType::UInt32,
+        };
+
+        match node_handle.sdo_read(request).await {
+            Ok(_) => {
+                // Node is alive
+                consecutive_failures = 0;
+                let _ = update_tx.send(Update::ConnectionStatus(true));
+            },
+            Err(err) => {
+                // Node not responding
+                consecutive_failures += 1;
+                if consecutive_failures >= MAX_FAILURES {
+                    println!("Health check failed: {}", err);
+                    let _ = update_tx.send(Update::ConnectionStatus(false));
+                    let _ = update_tx.send(Update::ConnectionFailed(
+                        format!("Node not responding: {}", err)
+                    ));
+                }
+            }
+        }
     }
 }
 
@@ -102,6 +152,7 @@ pub fn communication_thread_main(
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let mut subscription_handles: HashMap<SdoAddress, JoinHandle<()>> = HashMap::new();
+    let mut _health_check_handle: Option<JoinHandle<()>> = None;
     // Keep connection alive - it owns the background CAN reader task
     let mut _connection_handle: Option<CANopenConnection> = None;
     let mut node_handle: Option<CANopenNodeHandle> = None;
@@ -117,7 +168,17 @@ pub fn communication_thread_main(
                 }){
                     Ok((conn, handle)) => {
                         _connection_handle = Some(conn);
-                        node_handle = Some(handle);
+                        node_handle = Some(handle.clone());
+
+                        // Spawn health check task to monitor node
+                        let update_tx_clone = update_tx.clone();
+                        let health_handle = rt.spawn(health_check_task(
+                            update_tx_clone,
+                            handle,
+                        ));
+                        _health_check_handle = Some(health_handle);
+
+                        println!("Connection established, health check started");
                     },
                     Err(err) => {
                         let _ = update_tx.send(Update::ConnectionFailed(err.to_string()));
