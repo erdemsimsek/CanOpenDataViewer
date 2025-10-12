@@ -2,10 +2,14 @@
 
 mod communication;
 mod canopen;
+mod config;
+mod logging;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use communication::{Command, Update, SdoAddress, SdoObject};
 use canopen_common::SdoDataType;
+use config::AppConfig;
+use logging::{Logger, LogEvent};
 
 use eframe::{egui, NativeOptions, egui::Color32, egui::ColorImage};
 use std::process::Command as process_command;
@@ -62,18 +66,50 @@ struct MyApp {
 
     // Error reporting
     error_message: Option<String>,
+
+    // Configuration and logging
+    config: AppConfig,
+    logger: Logger,
 }
 
 
 impl Default for MyApp {
     fn default() -> Self {
+        // Load configuration from file
+        let config = AppConfig::load();
+
+        // Initialize logger
+        let mut logger = Logger::new();
+        if config.enable_logging {
+            if let Some(log_dir) = config.get_log_directory() {
+                if let Err(e) = logger.enable(log_dir) {
+                    eprintln!("Failed to enable logging: {}", e);
+                }
+            }
+        }
+
+        // Pre-populate fields from loaded config
+        let selected_can_interface = if config.can_interface.is_empty() {
+            None
+        } else {
+            Some(config.can_interface.clone())
+        };
+
+        let (selected_node_id, node_id_str) = if config.node_id > 0 && config.node_id <= 127 {
+            (Some(config.node_id), config.node_id.to_string())
+        } else {
+            (None, String::new())
+        };
+
+        let eds_file_path = config.eds_file_path.as_ref().map(PathBuf::from);
+
         Self {
             current_view: AppView::SelectInterface,
             available_can_interfaces: get_can_interfaces(),
-            selected_can_interface: None,
-            selected_node_id: None,
-            node_id_str: String::new(),
-            eds_file_path: None,
+            selected_can_interface,
+            selected_node_id,
+            node_id_str,
+            eds_file_path,
 
             command_tx: None,
             update_rx: None,
@@ -92,6 +128,9 @@ impl Default for MyApp {
             sdo_search_query: String::new(),
 
             error_message: None,
+
+            config,
+            logger,
         }
     }
 }
@@ -106,6 +145,13 @@ impl eframe::App for MyApp {
                 },
 
                 Update::SdoData { address, value } => {
+                    // Log SDO data
+                    self.logger.log(LogEvent::SdoData {
+                        index: address.index,
+                        sub_index: address.sub_index,
+                        value: value.clone(),
+                    });
+
                     // 1. Try to parse the incoming string value into a number.
                     if let Ok(number_value) = value.parse::<f64>() {
                         // 2. Find the subscription this data belongs to.
@@ -120,13 +166,26 @@ impl eframe::App for MyApp {
                     }
                 }
                 Update::ConnectionFailed(error) => {
+                    // Log connection failure
+                    self.logger.log(LogEvent::ConnectionFailed(error.clone()));
+
                     self.error_message = Some(format!("Connection Error: {}", error));
                     self.connection_status = false;
                 }
                 Update::ConnectionStatus(is_alive) => {
+                    // Log connection status change
+                    self.logger.log(LogEvent::ConnectionStatus(is_alive));
+
                     self.connection_status = is_alive;
                 }
                 Update::SdoReadError { address, error } => {
+                    // Log SDO error
+                    self.logger.log(LogEvent::SdoError {
+                        index: address.index,
+                        sub_index: address.sub_index,
+                        error: error.clone(),
+                    });
+
                     self.error_message = Some(format!("SDO Read Error [{:#06X}:{:02X}]: {}", address.index, address.sub_index, error));
                 }
                 _ => {
@@ -294,6 +353,15 @@ impl MyApp {
                             self.current_view = AppView::SelectNodeId;
                         }
                         if ui.button("Start").clicked() {
+                            // Update and save configuration
+                            self.config.can_interface = self.selected_can_interface.clone().unwrap();
+                            self.config.node_id = self.selected_node_id.unwrap();
+                            self.config.eds_file_path = self.eds_file_path.as_ref().map(|p| p.display().to_string());
+
+                            if let Err(e) = self.config.save() {
+                                eprintln!("Failed to save configuration: {}", e);
+                            }
+
                             let (command_tx, command_rx) = std::sync::mpsc::channel();
                             let (update_tx, update_rx) = std::sync::mpsc::channel();
 
@@ -358,6 +426,38 @@ impl MyApp {
                 if let Some(node_id) = self.selected_node_id {
                     ui.label(format!("Node ID: {}", node_id));
                 }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Logging controls on the right side
+                    if self.logger.is_enabled() {
+                        if ui.button("Open Log Folder").clicked() {
+                            if let Some(log_path) = self.logger.log_file_path() {
+                                if let Some(parent) = log_path.parent() {
+                                    let _ = open::that(parent);
+                                }
+                            }
+                        }
+
+                        if let Some(log_path) = self.logger.log_file_path() {
+                            ui.label(format!("📝 {}", log_path.file_name().unwrap_or_default().to_string_lossy()));
+                        }
+                    }
+
+                    if ui.checkbox(&mut self.config.enable_logging, "Enable Logging").changed() {
+                        if self.config.enable_logging {
+                            if let Some(log_dir) = self.config.get_log_directory() {
+                                if let Err(e) = self.logger.enable(log_dir) {
+                                    self.error_message = Some(format!("Failed to enable logging: {}", e));
+                                    self.config.enable_logging = false;
+                                }
+                            }
+                        } else {
+                            self.logger.disable();
+                        }
+                        // Save config when logging preference changes
+                        let _ = self.config.save();
+                    }
+                });
             });
 
             // Error banner

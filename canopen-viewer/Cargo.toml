@@ -17,5 +17,12 @@ egui_plot = "0.31.0"
 image = "0.25.1"
 chrono = "0.4.41"
 
+# Configuration and logging
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+csv = "1.3"
+directories = "5.0"
+open = "5.0"
+
 # This will use the shared CANopen protocol code
 canopen-common = { path = "../canopen-common" }

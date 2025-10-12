@@ -25,6 +25,8 @@ CanOpenDataViewer/
 * **Configurable SDO Polling:** Select any SDO from a device's Object Dictionary, set a custom polling rate for each, and see the values plotted or logged in real-time.
 * **Node Health Monitoring:** Automatic health checks verify that the CANopen node is alive by periodically reading the mandatory Device Type object (0x1000:00). Detects node disconnection within 4-6 seconds and updates the UI accordingly.
 * **Connection Status & Error Reporting:** Clear visual indicators show whether the node is connected (green) or disconnected (red). All connection failures and SDO read errors are displayed in dismissible error banners with detailed messages.
+* **Configuration Persistence:** Automatically saves and restores your last used settings (CAN interface, Node ID, EDS file path, logging preferences). No need to re-enter configuration on every startup.
+* **Automatic File Logging:** Optionally log all SDO data, connection events, and errors to CSV files with timestamps. Logs are saved to `~/.local/share/canopen-viewer/logs/` by default. Enable/disable logging via the checkbox in the top panel, and open the log folder with one click.
 * **Selective TPDO Monitoring:** The UI automatically lists all available Transmit-PDOs from a device profile. Simply check the ones you want to monitor.
 * **Intelligent Data Handling:**
     * **Numeric** PDO data is automatically sent to the real-time plot.
@@ -128,11 +130,11 @@ This ensures the user is always presented with information in its most useful fo
     ```
 
     Then in the GUI:
-    - Select CAN interface: `vcan0`
-    - Enter Node ID: `4`
-    - Select EDS file: `examples/mock_node.eds` (for testing with mock node)
-    - Click "Start"
+    - **First time:** Select CAN interface (`vcan0`), enter Node ID (`4`), and select EDS file (`examples/mock_node.eds`)
+    - **Subsequent times:** Your last configuration will be automatically loaded - just click through the steps
+    - Click "Start" - your settings will be saved automatically
     - **You should see:** Green "● Connected" status in the top panel
+    - **Optional:** Enable logging with the "Enable Logging" checkbox (top-right) to record all events to CSV
     - Subscribe to SDOs via the "Subscribe to SDO" button
     - **Try it:** Stop the mock node (Ctrl+C in Terminal 1) and watch the status change to red "● Disconnected" within 4-6 seconds
 
@@ -192,6 +194,26 @@ This ensures the user is always presented with information in its most useful fo
 **This shouldn't happen!** The application is designed with a non-blocking UI architecture. If you encounter this:
 1. Check CPU usage - the application should use minimal CPU when idle
 2. Report the issue with steps to reproduce at: https://github.com/erdemsimsek/CanOpenDataViewer/issues
+
+### Logging Issues
+
+**Problem:** Logging checkbox doesn't work or logs aren't being created.
+
+**Solution:**
+1. Check that the log directory is writable: `~/.local/share/canopen-viewer/logs/`
+2. If the directory doesn't exist, the application will try to create it automatically
+3. Click "Open Log Folder" button to view the log directory in your file manager
+4. Log files are named: `canopen_log_YYYYMMDD_HHMMSS.csv`
+
+**Log File Format:**
+- CSV format with headers: `Timestamp, Event Type, Address, Value, Message`
+- Event types: `SDO_DATA`, `SDO_ERROR`, `CONNECTION_FAILED`, `CONNECTION_STATUS`
+- Open with any spreadsheet application (Excel, LibreOffice Calc, etc.)
+
+**Configuration File Location:**
+- Configuration is saved to: `~/.config/canopen-viewer/config.toml`
+- You can manually edit this file if needed
+- Fields: `can_interface`, `node_id`, `eds_file_path`, `enable_logging`, `log_directory`
 
 ## Roadmap
 
