@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: CANopen Data Viewer v${{ steps.get_version.outputs.version }}
+          body: |
+            ## CANopen Real-time Monitor & Plotter v${{ steps.get_version.outputs.version }}
+
+            ### Features
+            - Real-time CANopen SDO monitoring and plotting
+            - Comprehensive subscription management
+            - Plot export (PNG screenshots and CSV data)
+            - Automatic logging with timestamps
+            - Connection status monitoring
+
+            ### Installation
+
+            **Linux (Debian/Ubuntu):**
+            ```bash
+            # Install .deb package
+            sudo dpkg -i canopen-viewer_${{ steps.get_version.outputs.version }}_amd64.deb
+            sudo apt-get install -f  # Fix any dependency issues
+            ```
+
+            **Linux (Generic):**
+            ```bash
+            # Extract and run executable
+            chmod +x canopen-viewer
+            ./canopen-viewer
+            ```
+
+            ### System Requirements
+            - Linux with CAN interface support
+            - socketcan kernel modules
+            - For virtual testing: `sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`
+
+            ### Quick Start
+            1. Set up your CAN interface (physical or virtual)
+            2. Run the application
+            3. Select interface, node ID, and EDS file
+            4. Start monitoring and subscribe to SDO objects
+          draft: false
+          prerelease: false
+
+  build-linux:
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            pkg-config \
+            build-essential
+
+      - name: Update version in Cargo.toml
+        run: |
+          sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' canopen-viewer/Cargo.toml
+          sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' canopen-common/Cargo.toml
+          sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' mock-canopen-node/Cargo.toml
+
+      - name: Build release binary
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --target ${{ matrix.target }} -p canopen-viewer
+
+      - name: Create binary archive
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/canopen-viewer dist/
+          cp README.md dist/
+          cp LICENSE dist/ || echo "LICENSE file not found, skipping"
+          cd dist
+          tar czf ../canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz .
+
+      - name: Upload binary archive
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
+          asset_name: canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
+          asset_content_type: application/gzip
+
+  build-deb-package:
+    needs: create-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libasound2-dev \
+            pkg-config \
+            build-essential \
+            dpkg-dev \
+            fakeroot
+
+      - name: Update version in Cargo.toml
+        run: |
+          sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' canopen-viewer/Cargo.toml
+          sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' canopen-common/Cargo.toml
+          sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' mock-canopen-node/Cargo.toml
+
+      - name: Build release binary
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release -p canopen-viewer
+
+      - name: Create .deb package structure
+        run: |
+          mkdir -p debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/DEBIAN
+          mkdir -p debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/bin
+          mkdir -p debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/share/applications
+          mkdir -p debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/share/doc/canopen-viewer
+          mkdir -p debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/share/pixmaps
+
+      - name: Copy binary and create package files
+        run: |
+          # Copy binary
+          cp target/release/canopen-viewer debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/bin/
+
+          # Create control file
+          cat > debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/DEBIAN/control << EOF
+          Package: canopen-viewer
+          Version: ${{ needs.create-release.outputs.version }}
+          Section: electronics
+          Priority: optional
+          Architecture: amd64
+          Depends: libc6, libx11-6, libxrandr2, libxi6, libgl1-mesa-glx, libasound2
+          Maintainer: CANopen Data Viewer Team
+          Description: CANopen Real-time Monitor & Plotter
+           A high-performance Rust application for CANopen diagnostics providing
+           real-time visualization of TPDO/SDO data from CAN bus devices with
+           configurable polling and plotting capabilities.
+          EOF
+
+          # Create desktop entry
+          cat > debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/share/applications/canopen-viewer.desktop << EOF
+          [Desktop Entry]
+          Name=CANopen Data Viewer
+          Comment=CANopen Real-time Monitor & Plotter
+          Exec=canopen-viewer
+          Icon=canopen-viewer
+          Type=Application
+          Categories=Development;Electronics;
+          EOF
+
+          # Copy documentation
+          cp README.md debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64/usr/share/doc/canopen-viewer/
+
+      - name: Build .deb package
+        run: |
+          cd debian
+          dpkg-deb --build canopen-viewer_${{ needs.create-release.outputs.version }}_amd64
+
+      - name: Upload .deb package
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64.deb
+          asset_name: canopen-viewer_${{ needs.create-release.outputs.version }}_amd64.deb
+          asset_content_type: application/vnd.debian.binary-package

@@ -5,6 +5,13 @@ mod canopen;
 mod config;
 mod logging;
 
+// Version information embedded at compile time
+const APP_VERSION: &str = env!("APP_VERSION");
+const GIT_HASH: &str = env!("GIT_HASH");
+const GIT_BRANCH: &str = env!("GIT_BRANCH");
+const GIT_DIRTY: &str = env!("GIT_DIRTY");
+const BUILD_TIME: &str = env!("BUILD_TIME");
+
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use communication::{Command, Update, SdoAddress, SdoObject};
 use canopen_common::SdoDataType;
@@ -83,6 +90,9 @@ struct MyApp {
     // Configuration and logging
     config: AppConfig,
     logger: Logger,
+
+    // UI state
+    show_about_dialog: bool,
 }
 
 
@@ -144,6 +154,8 @@ impl Default for MyApp {
 
             config,
             logger,
+
+            show_about_dialog: false,
         }
     }
 }
@@ -455,6 +467,13 @@ impl MyApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // About button
+                    if ui.button("ℹ About").clicked() {
+                        self.show_about_dialog = true;
+                    }
+
+                    ui.separator();
+
                     // Logging controls on the right side
                     if self.logger.is_enabled() {
                         if ui.button("Open Log Folder").clicked() {
@@ -515,6 +534,7 @@ impl MyApp {
         });
 
         self.draw_subscription_modal(ui);
+        self.draw_about_dialog(ui);
     }
 
     fn draw_sdo_list(&mut self, ui: &mut egui::Ui) {
@@ -861,6 +881,68 @@ impl MyApp {
                         eprintln!("Failed to create CSV file: {}", e);
                     }
                 }
+            }
+        }
+    }
+
+    fn draw_about_dialog(&mut self, ui: &mut egui::Ui) {
+        if self.show_about_dialog {
+            let mut is_open = true;
+            egui::Window::new("About CANopen Data Viewer")
+                .open(&mut is_open)
+                .resizable(false)
+                .collapsible(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ui.ctx(), |ui| {
+                    ui.set_width(400.0);
+
+                    ui.vertical_centered(|ui| {
+                        ui.heading("CANopen Data Viewer");
+                        ui.add_space(10.0);
+
+                        // Version info
+                        ui.label(format!("Version: {}", APP_VERSION));
+
+                        if GIT_HASH != "unknown" {
+                            let version_details = if GIT_DIRTY == "true" {
+                                format!("Git: {} ({})*", GIT_HASH, GIT_BRANCH)
+                            } else {
+                                format!("Git: {} ({})", GIT_HASH, GIT_BRANCH)
+                            };
+                            ui.label(version_details);
+                        }
+
+                        ui.label(format!("Built: {}", BUILD_TIME));
+                        ui.add_space(15.0);
+
+                        // Description
+                        ui.label("CANopen Real-time Monitor & Plotter");
+                        ui.label("High-performance Rust application for CANopen diagnostics");
+                        ui.add_space(10.0);
+
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        // Features
+                        ui.label("✓ Real-time SDO monitoring and plotting");
+                        ui.label("✓ Comprehensive subscription management");
+                        ui.label("✓ Plot export (PNG screenshots and CSV data)");
+                        ui.label("✓ Automatic logging with timestamps");
+                        ui.label("✓ Connection status monitoring");
+                        ui.add_space(10.0);
+
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        // System info
+                        ui.label("Runtime: Rust stable");
+                        ui.label(format!("Platform: {}", std::env::consts::OS));
+                        ui.label(format!("Architecture: {}", std::env::consts::ARCH));
+                    });
+                });
+
+            if !is_open {
+                self.show_about_dialog = false;
             }
         }
     }

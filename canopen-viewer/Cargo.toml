@@ -26,3 +26,6 @@ open = "5.0"
 
 # This will use the shared CANopen protocol code
 canopen-common = { path = "../canopen-common" }
+
+[build-dependencies]
+chrono = "0.4.41"
