@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -13,21 +16,20 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Get version from tag
         id: get_version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Create Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ github.ref }}
-          release_name: CANopen Data Viewer v${{ steps.get_version.outputs.version }}
+          name: CANopen Data Viewer v${{ steps.get_version.outputs.version }}
           body: |
             ## CANopen Real-time Monitor & Plotter v${{ steps.get_version.outputs.version }}
 
@@ -66,6 +68,7 @@ jobs:
             4. Start monitoring and subscribe to SDO objects
           draft: false
           prerelease: false
+          generate_release_notes: true
 
   build-linux:
     needs: create-release
@@ -119,14 +122,9 @@ jobs:
           tar czf ../canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz .
 
       - name: Upload binary archive
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
-          asset_name: canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
-          asset_content_type: application/gzip
+          files: ./canopen-viewer-v${{ needs.create-release.outputs.version }}-${{ matrix.target }}.tar.gz
 
   build-deb-package:
     needs: create-release
@@ -216,11 +214,6 @@ jobs:
           dpkg-deb --build canopen-viewer_${{ needs.create-release.outputs.version }}_amd64
 
       - name: Upload .deb package
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v1
         with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64.deb
-          asset_name: canopen-viewer_${{ needs.create-release.outputs.version }}_amd64.deb
-          asset_content_type: application/vnd.debian.binary-package
+          files: ./debian/canopen-viewer_${{ needs.create-release.outputs.version }}_amd64.deb
