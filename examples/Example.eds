@@ -1189,7 +1189,7 @@ ObjectType=0x7
 ;StorageLocation=RAM
 DataType=0x0007
 AccessType=rw
-DefaultValue=$NODEID+0xC0000180
+DefaultValue=$NODEID+0x180
 PDOMapping=0
 
 [1800sub2]
@@ -1420,34 +1420,34 @@ ObjectType=0x7
 ;StorageLocation=RAM
 DataType=0x0005
 AccessType=rw
-DefaultValue=0
+DefaultValue=3
 PDOMapping=0
 
 [1A00sub1]
-ParameterName=Application object 1
+ParameterName=Temperature
 ObjectType=0x7
 ;StorageLocation=RAM
 DataType=0x0007
 AccessType=rw
-DefaultValue=0x00000000
+DefaultValue=0x60000110
 PDOMapping=0
 
 [1A00sub2]
-ParameterName=Application object 2
+ParameterName=Pressure
 ObjectType=0x7
 ;StorageLocation=RAM
 DataType=0x0007
 AccessType=rw
-DefaultValue=0x00000000
+DefaultValue=0x60010110
 PDOMapping=0
 
 [1A00sub3]
-ParameterName=Application object 3
+ParameterName=Status
 ObjectType=0x7
 ;StorageLocation=RAM
 DataType=0x0007
 AccessType=rw
-DefaultValue=0x00000000
+DefaultValue=0x60020108
 PDOMapping=0
 
 [1A00sub4]
@@ -1757,11 +1757,14 @@ DefaultValue=0x00000000
 PDOMapping=0
 
 [ManufacturerObjects]
-SupportedObjects=4
+SupportedObjects=7
 1=0x2000
 2=0x2001
 3=0x2002
 4=0x2003
+5=0x6000
+6=0x6001
+7=0x6002
 
 [2000]
 ParameterName=TemperatureReadings
@@ -1897,4 +1900,76 @@ DataType=0x0006
 AccessType=rw
 DefaultValue=0
 PDOMapping=0
+
+[6000]
+ParameterName=TPDO1_Temperature
+ObjectType=0x9
+;StorageLocation=RAM
+SubNumber=0x2
+
+[6000sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+;StorageLocation=RAM
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x01
+PDOMapping=0
+
+[6000sub1]
+ParameterName=Temperature
+ObjectType=0x7
+;StorageLocation=RAM
+DataType=0x0003
+AccessType=ro
+DefaultValue=0
+PDOMapping=1
+
+[6001]
+ParameterName=TPDO1_Pressure
+ObjectType=0x9
+;StorageLocation=RAM
+SubNumber=0x2
+
+[6001sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+;StorageLocation=RAM
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x01
+PDOMapping=0
+
+[6001sub1]
+ParameterName=Pressure
+ObjectType=0x7
+;StorageLocation=RAM
+DataType=0x0003
+AccessType=ro
+DefaultValue=0
+PDOMapping=1
+
+[6002]
+ParameterName=TPDO1_Status
+ObjectType=0x9
+;StorageLocation=RAM
+SubNumber=0x2
+
+[6002sub0]
+ParameterName=Highest sub-index supported
+ObjectType=0x7
+;StorageLocation=RAM
+DataType=0x0005
+AccessType=ro
+DefaultValue=0x01
+PDOMapping=0
+
+[6002sub1]
+ParameterName=Status
+ObjectType=0x7
+;StorageLocation=RAM
+DataType=0x0001
+AccessType=ro
+DefaultValue=0
+PDOMapping=1
 

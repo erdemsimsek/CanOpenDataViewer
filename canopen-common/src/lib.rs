@@ -13,6 +13,7 @@ pub mod sdo;
 // Re-export commonly used types for convenience
 pub use sdo::{
     SdoRequest, SdoResponse, SdoResponseData, SdoDataType, SdoError,
-    create_sdo_request_frame, parse_sdo_response, parse_payload,
+    SdoWriteRequest, create_sdo_request_frame, create_sdo_write_frame,
+    parse_sdo_response, parse_sdo_write_response, parse_payload,
     get_abort_code_description, SdoCommand
 };

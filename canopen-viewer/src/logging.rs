@@ -16,6 +16,10 @@ pub enum LogEvent {
         sub_index: u8,
         error: String,
     },
+    TpdoData {
+        tpdo_number: u8,
+        values: Vec<(String, String)>,
+    },
     #[allow(dead_code)]  // Reserved for future use
     ConnectionSuccess,
     ConnectionFailed(String),
@@ -103,6 +107,18 @@ impl Logger {
                 String::new(),
                 error,
             ),
+            LogEvent::TpdoData { tpdo_number, values } => {
+                let fields = values.iter()
+                    .map(|(name, val)| format!("{}={}", name, val))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    "TPDO_DATA".to_string(),
+                    format!("TPDO{}", tpdo_number),
+                    fields,
+                    String::new(),
+                )
+            },
             LogEvent::ConnectionSuccess => (
                 "CONNECTION_SUCCESS".to_string(),
                 String::new(),

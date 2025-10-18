@@ -73,6 +73,13 @@ impl ObjectDictionary {
 
     /// Add standard test objects for demonstration
     pub fn add_test_objects(&mut self) {
+        self.add_test_objects_for_node(4); // Default node ID 4
+    }
+
+    /// Add test objects with node-specific values (e.g., for TPDO COB-IDs)
+    pub fn add_test_objects_for_node(&mut self, node_id: u8) {
+        // === Mandatory CANopen Objects ===
+
         // 0x1000:00 - Device Type (UInt32) - Static
         self.add_static(0x1000, 0x00, 0x00000191u32.to_le_bytes().to_vec(), SdoDataType::UInt32);
 
@@ -179,6 +186,88 @@ impl ObjectDictionary {
                 (value as i32).to_le_bytes().to_vec()
             },
             SdoDataType::Int32,
+        );
+
+        // === TPDO Configuration Objects ===
+
+        // TPDO1 Communication Parameters (0x1800)
+        // 0x1800:00 - Number of entries (UInt8)
+        self.add_static(0x1800, 0x00, vec![0x02], SdoDataType::UInt8);
+
+        // 0x1800:01 - COB-ID (UInt32) - bit 31 = 0 (valid), bits 10-0 = COB-ID
+        let tpdo1_cob_id = 0x180u32 + node_id as u32;
+        self.add_static(0x1800, 0x01, tpdo1_cob_id.to_le_bytes().to_vec(), SdoDataType::UInt32);
+
+        // 0x1800:02 - Transmission type (UInt8) - 254 = manufacturer specific
+        self.add_static(0x1800, 0x02, vec![0xFE], SdoDataType::UInt8);
+
+        // TPDO1 Mapping Parameters (0x1A00)
+        // 0x1A00:00 - Number of mapped objects (UInt8)
+        self.add_static(0x1A00, 0x00, vec![0x03], SdoDataType::UInt8);
+
+        // 0x1A00:01 - Mapping entry 1: Temperature (0x6000:01, 16 bits)
+        // Format: bits 31-16 = index, bits 15-8 = subindex, bits 7-0 = bit length
+        let mapping1: u32 = (0x6000 << 16) | (0x01 << 8) | 16;
+        self.add_static(0x1A00, 0x01, mapping1.to_le_bytes().to_vec(), SdoDataType::UInt32);
+
+        // 0x1A00:02 - Mapping entry 2: Pressure (0x6001:01, 16 bits)
+        let mapping2: u32 = (0x6001 << 16) | (0x01 << 8) | 16;
+        self.add_static(0x1A00, 0x02, mapping2.to_le_bytes().to_vec(), SdoDataType::UInt32);
+
+        // 0x1A00:03 - Mapping entry 3: Status (0x6002:01, 8 bits)
+        let mapping3: u32 = (0x6002 << 16) | (0x01 << 8) | 8;
+        self.add_static(0x1A00, 0x03, mapping3.to_le_bytes().to_vec(), SdoDataType::UInt32);
+
+        // === TPDO Data Objects (synchronized with transmitted TPDO) ===
+
+        // 0x6000:01 - Temperature (UInt16) - Dynamic (same as transmitted in TPDO)
+        use std::sync::atomic::AtomicU16;
+        let temperature = Arc::new(AtomicU16::new(2350));
+        let temp_clone = temperature.clone();
+        self.add_dynamic(
+            0x6000,
+            0x01,
+            move || {
+                // Simulate changing temperature
+                let current = temp_clone.load(Ordering::SeqCst);
+                let next = (current + 1) % 3000;
+                temp_clone.store(next, Ordering::SeqCst);
+                next.to_le_bytes().to_vec()
+            },
+            SdoDataType::UInt16,
+        );
+
+        // 0x6001:01 - Pressure (UInt16) - Dynamic
+        let pressure = Arc::new(AtomicU16::new(1013));
+        let pres_clone = pressure.clone();
+        self.add_dynamic(
+            0x6001,
+            0x01,
+            move || {
+                // Simulate changing pressure
+                let current = pres_clone.load(Ordering::SeqCst);
+                let next = 1000 + ((current - 1000 + 1) % 50);
+                pres_clone.store(next, Ordering::SeqCst);
+                next.to_le_bytes().to_vec()
+            },
+            SdoDataType::UInt16,
+        );
+
+        // 0x6002:01 - Status (UInt8) - Dynamic
+        use std::sync::atomic::AtomicU8;
+        let status = Arc::new(AtomicU8::new(1));
+        let status_clone = status.clone();
+        self.add_dynamic(
+            0x6002,
+            0x01,
+            move || {
+                // Toggle status
+                let current = status_clone.load(Ordering::SeqCst);
+                let next = if current == 1 { 2 } else { 1 };
+                status_clone.store(next, Ordering::SeqCst);
+                vec![next]
+            },
+            SdoDataType::UInt8,
         );
     }
 }

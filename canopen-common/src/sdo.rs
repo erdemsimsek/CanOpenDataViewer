@@ -14,10 +14,13 @@ pub enum SdoCommand {
     ExpeditedUploadResponse = 0x43,
     /// Segmented upload response
     SegmentedUploadResponse = 0x41,
-    /// Upload segment request
-    UploadSegmentRequest = 0x60,
     /// Upload segment response
     UploadSegmentResponse = 0x00,
+    /// Initiate domain download (write) - expedited
+    InitiateDownloadRequest = 0x23,
+    /// Download response (write confirmation) - Also 0x60 for upload segment request
+    /// Context determines which: upload segment is client->server, download response is server->client
+    DownloadResponse = 0x60,
     /// Abort transfer
     AbortTransfer = 0x80,
 }
@@ -59,13 +62,22 @@ impl SdoDataType {
     }
 }
 
-/// SDO Request structure
+/// SDO Request structure (for reading)
 #[derive(Debug, Clone)]
 pub struct SdoRequest {
     pub node_id: u8,
     pub index: u16,
     pub subindex: u8,
     pub expected_type: SdoDataType,
+}
+
+/// SDO Write Request structure (for writing)
+#[derive(Debug, Clone)]
+pub struct SdoWriteRequest {
+    pub node_id: u8,
+    pub index: u16,
+    pub subindex: u8,
+    pub data: Vec<u8>,
 }
 
 /// SDO Response data
@@ -134,7 +146,7 @@ impl fmt::Display for SdoError {
 
 impl Error for SdoError {}
 
-/// Create an SDO request CAN frame
+/// Create an SDO read request CAN frame
 pub fn create_sdo_request_frame(request: &SdoRequest) -> Result<CanFrame, SdoError> {
     let request_id = StandardId::new(0x600 + request.node_id as u16)
         .ok_or_else(|| SdoError::InvalidResponse("Invalid CAN ID".to_string()))?;
@@ -153,6 +165,48 @@ pub fn create_sdo_request_frame(request: &SdoRequest) -> Result<CanFrame, SdoErr
 
     // Remaining bytes are zero (padding)
     data[4..8].fill(0);
+
+    CanFrame::new(request_id, &data)
+        .ok_or_else(|| SdoError::InvalidResponse("Failed to create CAN frame".to_string()))
+}
+
+/// Create an SDO write request CAN frame (expedited download)
+pub fn create_sdo_write_frame(request: &SdoWriteRequest) -> Result<CanFrame, SdoError> {
+    let request_id = StandardId::new(0x600 + request.node_id as u16)
+        .ok_or_else(|| SdoError::InvalidResponse("Invalid CAN ID".to_string()))?;
+
+    if request.data.len() > 4 {
+        return Err(SdoError::InvalidResponse(
+            "Only expedited transfers (1-4 bytes) are supported".to_string()
+        ));
+    }
+
+    let mut data = [0u8; 8];
+
+    // SDO command specifier for expedited download
+    // Format: 0b001snnee where:
+    //   s = 1 (size indicated)
+    //   nn = number of bytes that do NOT contain data (4 - data_len)
+    //   e = 1 (expedited transfer)
+    let n = (4 - request.data.len()) as u8;
+    data[0] = 0x20 | 0x02 | 0x01 | (n << 2); // 0x2X where X depends on size
+
+    // Index in little endian
+    data[1] = (request.index & 0xFF) as u8;
+    data[2] = ((request.index >> 8) & 0xFF) as u8;
+
+    // Subindex
+    data[3] = request.subindex;
+
+    // Copy data bytes
+    for (i, &byte) in request.data.iter().enumerate() {
+        data[4 + i] = byte;
+    }
+
+    // Remaining bytes are zero (padding)
+    for i in (4 + request.data.len())..8 {
+        data[i] = 0;
+    }
 
     CanFrame::new(request_id, &data)
         .ok_or_else(|| SdoError::InvalidResponse("Failed to create CAN frame".to_string()))
@@ -280,6 +334,50 @@ pub fn parse_payload(payload: &[u8], data_type: &SdoDataType) -> Result<SdoRespo
             Ok(SdoResponseData::Bytes(payload.to_vec()))
         }
     }
+}
+
+/// Parse SDO write response frame
+pub fn parse_sdo_write_response(frame: CanFrame, request: &SdoWriteRequest) -> Result<(), SdoError> {
+    let data = frame.data();
+    if data.len() < 4 {
+        return Err(SdoError::InvalidResponse("Frame too short".to_string()));
+    }
+
+    let command = data[0];
+    let index = u16::from_le_bytes([data[1], data[2]]);
+    let subindex = data[3];
+
+    // Verify this response matches our request
+    if index != request.index || subindex != request.subindex {
+        return Err(SdoError::InvalidResponse(format!(
+            "Response mismatch: expected index=0x{:04X}, subindex={}, got index=0x{:04X}, subindex={}",
+            request.index, request.subindex, index, subindex
+        )));
+    }
+
+    // Check for abort transfer
+    if command == SdoCommand::AbortTransfer as u8 {
+        let abort_code = if data.len() >= 8 {
+            u32::from_le_bytes([data[4], data[5], data[6], data[7]])
+        } else {
+            0
+        };
+
+        let error_info = get_abort_code_description(abort_code);
+        return Err(SdoError::AbortTransfer {
+            code: abort_code,
+            info: error_info,
+        });
+    }
+
+    // Check for download response (0x60)
+    if command == SdoCommand::DownloadResponse as u8 {
+        return Ok(());
+    }
+
+    Err(SdoError::InvalidResponse(format!(
+        "Unexpected command in write response: 0x{:02X}", command
+    )))
 }
 
 /// Get human-readable description of SDO abort codes

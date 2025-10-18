@@ -18,8 +18,8 @@
 mod object_dictionary;
 mod sdo_server;
 
-use socketcan::{CanSocket, Socket};
-use std::time::Duration;
+use socketcan::{CanSocket, Socket, CanFrame, StandardId, EmbeddedFrame};
+use std::time::{Duration, Instant};
 use object_dictionary::ObjectDictionary;
 use sdo_server::SdoServer;
 
@@ -66,7 +66,7 @@ fn main() {
 
     // Create object dictionary with test data
     let mut object_dict = ObjectDictionary::new();
-    object_dict.add_test_objects();
+    object_dict.add_test_objects_for_node(node_id);
 
     println!("✓ Object dictionary loaded with {} objects", object_dict.len());
     println!("\n📋 Available SDO Objects:");
@@ -78,10 +78,19 @@ fn main() {
 
     println!("🚀 Mock node is running!");
     println!("   Waiting for SDO requests on COB-ID 0x{:03X}...", 0x600 + node_id as u16);
+    println!("   Broadcasting TPDO1 on COB-ID 0x{:03X} every 100ms", 0x180 + node_id as u16);
     println!("   Press Ctrl+C to stop\n");
+
+    // TPDO broadcasting state
+    let mut last_tpdo_time = Instant::now();
+    let tpdo_interval = Duration::from_millis(100);
+    let mut temperature: u16 = 2350; // 23.50°C
+    let mut pressure: u16 = 1013;    // 1013 hPa
+    let mut status: u8 = 1;           // OK
 
     // Main loop: listen for CAN frames and respond to SDO requests
     loop {
+        // Handle incoming SDO requests
         match socket.read_frame() {
             Ok(frame) => {
                 // Let the SDO server handle the frame
@@ -99,6 +108,44 @@ fn main() {
                     eprintln!("⚠ CAN read error: {}", err);
                 }
             }
+        }
+
+        // Broadcast TPDO periodically
+        if last_tpdo_time.elapsed() >= tpdo_interval {
+            // Update test values (simulate changing sensor data)
+            temperature = (temperature + 1) % 3000; // Varies from 0 to 30.00°C
+            pressure = 1000 + (pressure - 1000 + 1) % 50; // Varies from 1000 to 1050 hPa
+            status = if status == 1 { 2 } else { 1 }; // Toggle between 1 and 2
+
+            // Create TPDO frame
+            // TPDO1 COB-ID = 0x180 + node_id
+            // Mapping: Temperature (16-bit), Pressure (16-bit), Status (8-bit)
+            let tpdo_cob_id = 0x180 + node_id as u16;
+
+            if let Some(std_id) = StandardId::new(tpdo_cob_id) {
+                let mut data = [0u8; 8];
+
+                // Pack data in little-endian format
+                data[0] = (temperature & 0xFF) as u8;
+                data[1] = ((temperature >> 8) & 0xFF) as u8;
+                data[2] = (pressure & 0xFF) as u8;
+                data[3] = ((pressure >> 8) & 0xFF) as u8;
+                data[4] = status;
+                // Remaining bytes are padding (0)
+
+                if let Some(frame) = CanFrame::new(std_id, &data[..5]) {
+                    if let Err(e) = socket.write_frame(&frame) {
+                        eprintln!("⚠ Failed to send TPDO: {}", e);
+                    } else {
+                        print!("📤 TPDO1: Temp={:.2}°C, Press={}hPa, Status={}\r",
+                               temperature as f32 / 100.0, pressure, status);
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                    }
+                }
+            }
+
+            last_tpdo_time = Instant::now();
         }
     }
 }

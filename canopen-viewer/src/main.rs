@@ -12,8 +12,8 @@ const GIT_BRANCH: &str = env!("GIT_BRANCH");
 const GIT_DIRTY: &str = env!("GIT_DIRTY");
 const BUILD_TIME: &str = env!("BUILD_TIME");
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use communication::{Command, Update, SdoAddress, SdoObject};
+use std::collections::{BTreeMap, HashMap, VecDeque, HashSet};
+use communication::{Command, Update, SdoAddress, SdoObject, TpdoData};
 use canopen_common::SdoDataType;
 use config::AppConfig;
 use logging::{Logger, LogEvent};
@@ -35,6 +35,12 @@ enum AppView {
     Main
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum SidebarTab {
+    SDO,
+    TPDO,
+}
+
 #[derive(Debug, Clone)]
 pub enum SubscriptionStatus {
     Active,       // Currently receiving data
@@ -53,6 +59,22 @@ struct SdoSubscription{
     paused: bool,
     start_time: DateTime<Local>, // Reference point for relative timestamps
 }
+
+// Identifier for a specific field within a TPDO
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct TpdoFieldId {
+    tpdo_number: u8,
+    field_name: String,  // e.g., "Temperature", "Pressure", "Status"
+}
+
+#[derive(Debug, Clone)]
+struct TpdoFieldSubscription {
+    plot_data: VecDeque<[f64; 2]>, // [timestamp_seconds, value]
+    last_value: Option<String>,
+    last_timestamp: Option<DateTime<Local>>,
+    start_time: DateTime<Local>,
+}
+
 struct ScreenshotInfo {
     filename: String,
     rect: egui::Rect,
@@ -83,6 +105,8 @@ struct MyApp {
     modal_interval_str: String,
 
     sdo_search_query: String,
+    tpdo_search_query: String,
+    sidebar_tab: SidebarTab,
 
     // Error reporting
     error_message: Option<String>,
@@ -93,6 +117,15 @@ struct MyApp {
 
     // UI state
     show_about_dialog: bool,
+
+    // TPDO Phase 1 - Simple display
+    tpdo_data: Vec<TpdoData>,  // Store recent TPDO messages
+    tpdo_discovery_requested: bool,
+    discovered_tpdos: Vec<communication::TpdoConfig>,  // Discovered TPDO configurations
+    active_tpdos: std::collections::HashSet<u8>,  // Set of TPDO numbers currently running
+
+    // TPDO field plotting
+    tpdo_field_subscriptions: HashMap<TpdoFieldId, TpdoFieldSubscription>,
 }
 
 
@@ -149,6 +182,8 @@ impl Default for MyApp {
             modal_interval_str: String::new(),
 
             sdo_search_query: String::new(),
+            tpdo_search_query: String::new(),
+            sidebar_tab: SidebarTab::SDO,
 
             error_message: None,
 
@@ -156,6 +191,13 @@ impl Default for MyApp {
             logger,
 
             show_about_dialog: false,
+
+            tpdo_data: Vec::new(),
+            tpdo_discovery_requested: false,
+            discovered_tpdos: Vec::new(),
+            active_tpdos: HashSet::new(),
+
+            tpdo_field_subscriptions: HashMap::new(),
         }
     }
 }
@@ -226,6 +268,58 @@ impl eframe::App for MyApp {
                     }
 
                     self.error_message = Some(format!("SDO Read Error [{:#06X}:{:02X}]: {}", address.index, address.sub_index, error));
+                }
+                Update::TpdoData(tpdo_data) => {
+                    // Log TPDO data
+                    self.logger.log(LogEvent::TpdoData {
+                        tpdo_number: tpdo_data.tpdo_number,
+                        values: tpdo_data.values.clone(),
+                    });
+
+                    // Store TPDO data (keep last 50 messages)
+                    let now = tpdo_data.timestamp;
+
+                    // Process each field in the TPDO for plotting
+                    for (field_name, value_str) in &tpdo_data.values {
+                        let field_id = TpdoFieldId {
+                            tpdo_number: tpdo_data.tpdo_number,
+                            field_name: field_name.clone(),
+                        };
+
+                        // Try to parse the value as a number
+                        if let Ok(numeric_value) = value_str.parse::<f64>() {
+                            // Get or create subscription for this field
+                            let subscription = self.tpdo_field_subscriptions
+                                .entry(field_id.clone())
+                                .or_insert_with(|| TpdoFieldSubscription {
+                                    plot_data: VecDeque::new(),
+                                    last_value: None,
+                                    last_timestamp: None,
+                                    start_time: now,
+                                });
+
+                            // Update last value and timestamp
+                            subscription.last_value = Some(value_str.clone());
+                            subscription.last_timestamp = Some(now);
+
+                            // Add to plot data
+                            if subscription.plot_data.len() >= PLOT_BUFFER_SIZE {
+                                subscription.plot_data.pop_front();
+                            }
+
+                            // Calculate seconds since start time for X-axis
+                            let elapsed_seconds = (now - subscription.start_time).num_milliseconds() as f64 / 1000.0;
+                            subscription.plot_data.push_back([elapsed_seconds, numeric_value]);
+                        }
+                    }
+
+                    self.tpdo_data.push(tpdo_data);
+                    if self.tpdo_data.len() > 50 {
+                        self.tpdo_data.remove(0);
+                    }
+                }
+                Update::TpdosDiscovered(tpdos) => {
+                    self.discovered_tpdos = tpdos;
                 }
                 _ => {
 
@@ -444,6 +538,14 @@ impl MyApp {
             }
         }
 
+        // Auto-discover TPDOs (but don't start them) once connected and SDOs fetched
+        if !self.tpdo_discovery_requested && self.connection_status && self.sdo_data.is_some() {
+            if let Some(tx) = &self.command_tx {
+                let _ = tx.send(Command::DiscoverTpdos);
+                self.tpdo_discovery_requested = true;
+            }
+        }
+
         // Top panel for status and error display
         egui::TopBottomPanel::top("status_panel").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -538,37 +640,50 @@ impl MyApp {
     }
 
     fn draw_sdo_list(&mut self, ui: &mut egui::Ui) {
-        ui.heading("SDO List");
-
+        // Tabs at the top
         ui.horizontal(|ui| {
-           ui.label("Search:");
+            ui.selectable_value(&mut self.sidebar_tab, SidebarTab::SDO, "SDO");
+            ui.selectable_value(&mut self.sidebar_tab, SidebarTab::TPDO, "TPDO");
+        });
+        ui.separator();
+
+        // Render content based on selected tab
+        match self.sidebar_tab {
+            SidebarTab::SDO => self.draw_sdo_tab_content(ui),
+            SidebarTab::TPDO => self.draw_tpdo_tab_content(ui),
+        }
+    }
+
+    fn draw_sdo_tab_content(&mut self, ui: &mut egui::Ui) {
+        // Search box
+        ui.horizontal(|ui| {
+            ui.label("Search:");
             ui.text_edit_singleline(&mut self.sdo_search_query);
         });
         ui.separator();
 
+        // Scrollable list of SDOs
         egui::ScrollArea::vertical().show(ui, |ui| {
             if let Some(sdo_data) = &self.sdo_data {
                 let query = self.sdo_search_query.to_lowercase();
                 for (index, sdo_object) in sdo_data {
                     let object_name_matches = sdo_object.name.to_lowercase().contains(&query);
+                    let index_matches = format!("{:#06X}", index).to_lowercase().contains(&query);
                     let any_sub_object_matches = sdo_object.sub_objects.values()
                         .any(|sub| sub.name.to_lowercase().contains(&query));
 
-                    if query.is_empty() || object_name_matches || any_sub_object_matches {
+                    if query.is_empty() || object_name_matches || index_matches || any_sub_object_matches {
                         ui.collapsing(format!("{:#06X}: {}", index, &sdo_object.name), |ui| {
                             for (sub_index, sub_object) in &sdo_object.sub_objects {
                                 let address = SdoAddress { index: *index, sub_index: *sub_index };
-                                // Change the label to a button
                                 let button_text = format!("Sub {}: {}", sub_index, &sub_object.name);
                                 if ui.button(button_text).clicked() {
-                                    // When clicked, open the modal for this specific SDO sub-object
                                     self.modal_open_for = Some(address.clone());
                                     if let Some(sub) = self.subscriptions.get(&address) {
                                         self.modal_interval_str = sub.interval_ms.to_string();
                                     } else {
                                         self.modal_interval_str = "100".to_string();
                                     }
-
                                 }
                             }
                         });
@@ -580,14 +695,122 @@ impl MyApp {
         });
     }
 
+    fn draw_tpdo_tab_content(&mut self, ui: &mut egui::Ui) {
+        // Search box
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            ui.text_edit_singleline(&mut self.tpdo_search_query);
+        });
+        ui.separator();
+
+        // Scrollable list of TPDOs
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            if !self.connection_status {
+                ui.label("Waiting for connection...");
+            } else if self.discovered_tpdos.is_empty() {
+                ui.label("Discovering TPDOs from device and EDS...");
+                ui.label("This may take a few seconds.");
+            } else {
+                // Show discovered TPDOs with start/stop controls
+                let query = self.tpdo_search_query.to_lowercase();
+
+                for config in &self.discovered_tpdos.clone() {
+                    let tpdo_num = config.tpdo_number;
+                    let is_active = self.active_tpdos.contains(&tpdo_num);
+
+                    // Check if this TPDO matches the search query
+                    let tpdo_name = format!("TPDO {}", tpdo_num);
+                    let name_matches = tpdo_name.to_lowercase().contains(&query);
+                    let any_field_matches = config.mapped_objects.iter()
+                        .any(|obj| obj.name.to_lowercase().contains(&query));
+
+                    if query.is_empty() || name_matches || any_field_matches {
+                        ui.collapsing(format!("TPDO {} (COB-ID: 0x{:03X})", tpdo_num, config.cob_id), |ui| {
+                            // Show last update time if active and has data
+                            if is_active {
+                                if let Some(latest_tpdo) = self.tpdo_data.iter()
+                                    .rev()
+                                    .find(|tpdo| tpdo.tpdo_number == tpdo_num)
+                                {
+                                    ui.label(format!("Last update: {}", latest_tpdo.timestamp.format("%H:%M:%S%.3f")));
+                                } else {
+                                    ui.label("Status: Active (waiting for data...)");
+                                }
+                            } else {
+                                ui.label("Status: Stopped");
+                            }
+
+                            ui.separator();
+
+                            // Show mapped objects and their current values
+                            ui.label(format!("Mapped objects ({}):", config.mapped_objects.len()));
+                            ui.add_space(5.0);
+
+                            // Get the latest TPDO data for this TPDO if active
+                            let latest_values = if is_active {
+                                self.tpdo_data.iter()
+                                    .rev()
+                                    .find(|tpdo| tpdo.tpdo_number == tpdo_num)
+                                    .map(|tpdo| &tpdo.values)
+                            } else {
+                                None
+                            };
+
+                            for obj in &config.mapped_objects {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("  • {}:", obj.name));
+
+                                    // Show current value if available
+                                    if let Some(values) = latest_values {
+                                        if let Some((_, value)) = values.iter().find(|(name, _)| name == &obj.name) {
+                                            ui.label(value);
+                                        } else {
+                                            ui.label("—");
+                                        }
+                                    } else {
+                                        ui.label("—");
+                                    }
+                                });
+                            }
+
+                            ui.add_space(10.0);
+                            ui.separator();
+
+                            // Start button (stop is in Active Subscriptions panel)
+                            ui.horizontal(|ui| {
+                                if !is_active {
+                                    if ui.button("▶ Start").clicked() {
+                                        // Send command to start listener
+                                        if let Some(tx) = &self.command_tx {
+                                            let _ = tx.send(Command::StartTpdoListener(config.clone()));
+                                            self.active_tpdos.insert(tpdo_num);
+                                        }
+                                    }
+                                } else {
+                                    ui.label("(Use Active Subscriptions panel below to stop)");
+                                }
+                            });
+                        });
+                    }
+                }
+
+                if self.discovered_tpdos.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label("No TPDOs found. The device may not have any configured.");
+                }
+            }
+        });
+    }
+
     fn draw_plots(&mut self, ui: &mut egui::Ui) {
         ui.heading("Plots");
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            if self.subscriptions.is_empty() {
-                ui.label("No active subscriptions. Select an SDO to start reading.");
+            if self.subscriptions.is_empty() && self.tpdo_field_subscriptions.is_empty() {
+                ui.label("No active subscriptions. Select an SDO to start reading or enable TPDO plotting.");
             } else {
 
+                // Draw SDO plots
                 let mut addresses_to_clear = Vec::new();
                 let mut addresses_to_export = Vec::new();
 
@@ -662,6 +885,82 @@ impl MyApp {
                 for address in addresses_to_export {
                     self.export_plot_data_to_csv(&address);
                 }
+
+                // Draw TPDO field plots
+                let mut tpdo_fields_to_clear = Vec::new();
+                let mut tpdo_fields_to_export = Vec::new();
+
+                for (field_id, subscription) in &self.tpdo_field_subscriptions {
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        let plot_id = format!("tpdo_plot_{}_{}", field_id.tpdo_number, field_id.field_name);
+                        let plot_title = format!("TPDO {} - {}", field_id.tpdo_number, field_id.field_name);
+
+                        ui.label(&plot_title);
+                        ui.separator();
+
+                        Plot::new(plot_id)
+                            .legend(egui_plot::Legend::default())
+                            .view_aspect(2.0)
+                            .allow_scroll(false)
+                            .height(350.0)
+                            .width(ui.available_width())
+                            .x_axis_label("Time (seconds)")
+                            .y_axis_label("Value")
+                            .legend(Legend::default())
+                            .show(ui, |plot_ui| {
+                                // Generate a unique color for the line based on TPDO number and field name
+                                let hash = field_id.tpdo_number as u32 * 100 + field_id.field_name.len() as u32;
+                                let color = Color32::from_rgb(
+                                    ((hash * 37) % 256) as u8,
+                                    ((hash * 73) % 256) as u8,
+                                    ((hash * 151) % 256) as u8,
+                                );
+
+                                let points_vec: Vec<[f64; 2]> = subscription.plot_data.iter().cloned().collect();
+
+                                let line = Line::new(PlotPoints::from(points_vec))
+                                    .name(&plot_title)
+                                    .color(color);
+
+                                plot_ui.line(line);
+                            });
+
+                        ui.horizontal(|ui| {
+                            if ui.button("📸 Capture Plot").clicked() {
+                                let now = Local::now();
+                                let timestamp = now.format("%Y-%m-%d %H:%M:%S");
+                                let info = ScreenshotInfo{
+                                    filename: format!("{}_{}.png", plot_title.replace(":", "_").replace(" - ", "_"), timestamp),
+                                    rect: ui.min_rect(),
+                                };
+
+                                let user_data = egui::UserData::new(Arc::new(info));
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
+                            }
+
+                            if ui.button("🗑 Clear").clicked() {
+                                tpdo_fields_to_clear.push(field_id.clone());
+                            }
+
+                            if ui.button("💾 Export to CSV").clicked() {
+                                tpdo_fields_to_export.push(field_id.clone());
+                            }
+                        });
+                    });
+                }
+
+                // Clear TPDO field plots
+                for field_id in tpdo_fields_to_clear {
+                    if let Some(subscription) = self.tpdo_field_subscriptions.get_mut(&field_id) {
+                        subscription.start_time = Local::now();
+                        subscription.plot_data.clear();
+                    }
+                }
+
+                // Export TPDO field plots
+                for field_id in tpdo_fields_to_export {
+                    self.export_tpdo_plot_data_to_csv(&field_id);
+                }
             }
         });
     }
@@ -671,34 +970,42 @@ impl MyApp {
             ui.heading("Active Subscriptions");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Stop All button
-                let stop_all_enabled = !self.subscriptions.is_empty();
+                let stop_all_enabled = !self.subscriptions.is_empty() || !self.active_tpdos.is_empty();
                 if ui.add_enabled(stop_all_enabled, egui::Button::new("🛑 Stop All")).clicked() {
-                    // Send unsubscribe commands for all active subscriptions
+                    // Send unsubscribe commands for all active SDO subscriptions
                     if let Some(tx) = &self.command_tx {
                         for address in self.subscriptions.keys() {
                             let _ = tx.send(Command::Unsubscribe(address.clone()));
                         }
+                        // Stop all TPDO listeners
+                        for tpdo_num in &self.active_tpdos.clone() {
+                            let _ = tx.send(Command::StopTpdoListener(*tpdo_num));
+                        }
                     }
                     self.subscriptions.clear();
+                    self.active_tpdos.clear();
+                    // Clear TPDO field subscriptions
+                    self.tpdo_field_subscriptions.clear();
                 }
 
                 // Subscription statistics
-                let active_count = self.subscriptions.iter()
+                let active_sdo_count = self.subscriptions.iter()
                     .filter(|(_, sub)| matches!(sub.status, SubscriptionStatus::Active))
                     .count();
                 let error_count = self.subscriptions.iter()
                     .filter(|(_, sub)| matches!(sub.status, SubscriptionStatus::Error(_)))
                     .count();
+                let active_tpdo_count = self.active_tpdos.len();
 
-                ui.label(format!("Total: {} | Active: {} | Errors: {}",
-                    self.subscriptions.len(), active_count, error_count));
+                ui.label(format!("SDO: {} | TPDO: {} | Active: {} | Errors: {}",
+                    self.subscriptions.len(), active_tpdo_count, active_sdo_count, error_count));
             });
         });
 
         ui.separator();
 
-        if self.subscriptions.is_empty() {
-            ui.label("No active subscriptions. Select an SDO from the list above to start monitoring.");
+        if self.subscriptions.is_empty() && self.active_tpdos.is_empty() {
+            ui.label("No active subscriptions. Select an SDO or start a TPDO to begin monitoring.");
         } else {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 egui::Grid::new("subscription_grid")
@@ -716,20 +1023,20 @@ impl MyApp {
                         ui.label("Actions");
                         ui.end_row();
 
-                        // Data rows
-                        let mut to_remove = Vec::new();
+                        // Data rows - SDO subscriptions
+                        let mut sdo_to_remove = Vec::new();
                         for (address, subscription) in &self.subscriptions {
                             // Status indicator with color
                             match &subscription.status {
                                 SubscriptionStatus::Active => {
-                                    ui.colored_label(Color32::from_rgb(0, 200, 0), "🟢 Active");
+                                    ui.colored_label(Color32::from_rgb(0, 200, 0), "🟢 SDO");
                                 },
                                 SubscriptionStatus::Error(err) => {
-                                    ui.colored_label(Color32::from_rgb(200, 0, 0), "🔴 Error")
+                                    ui.colored_label(Color32::from_rgb(200, 0, 0), "🔴 SDO")
                                         .on_hover_text(err);
                                 },
                                 SubscriptionStatus::Idle => {
-                                    ui.colored_label(Color32::from_rgb(200, 200, 0), "🟡 Idle");
+                                    ui.colored_label(Color32::from_rgb(200, 200, 0), "🟡 SDO");
                                 },
                             };
 
@@ -759,14 +1066,72 @@ impl MyApp {
                                 if let Some(tx) = &self.command_tx {
                                     let _ = tx.send(Command::Unsubscribe(address.clone()));
                                 }
-                                to_remove.push(address.clone());
+                                sdo_to_remove.push(address.clone());
                             }
                             ui.end_row();
                         }
 
-                        // Remove stopped subscriptions
-                        for address in to_remove {
+                        // Data rows - TPDO subscriptions
+                        let mut tpdo_to_remove = Vec::new();
+                        for tpdo_num in &self.active_tpdos.clone() {
+                            // Status
+                            ui.colored_label(Color32::from_rgb(0, 200, 0), "🟢 TPDO");
+
+                            // Address (TPDO number)
+                            ui.label(format!("TPDO {}", tpdo_num));
+
+                            // Data type - show the config
+                            if let Some(config) = self.discovered_tpdos.iter().find(|c| c.tpdo_number == *tpdo_num) {
+                                ui.label(format!("{} fields", config.mapped_objects.len()));
+                            } else {
+                                ui.label("—");
+                            }
+
+                            // Interval (TPDOs are event-driven, not polled)
+                            ui.label("Event-driven");
+
+                            // Last value - show summary of latest TPDO data
+                            if let Some(latest) = self.tpdo_data.iter().rev().find(|t| t.tpdo_number == *tpdo_num) {
+                                let summary = if latest.values.len() > 2 {
+                                    format!("{} values", latest.values.len())
+                                } else {
+                                    latest.values.iter()
+                                        .map(|(_, v)| v.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                };
+                                ui.label(summary);
+                            } else {
+                                ui.label("—");
+                            }
+
+                            // Last timestamp
+                            if let Some(latest) = self.tpdo_data.iter().rev().find(|t| t.tpdo_number == *tpdo_num) {
+                                ui.label(latest.timestamp.format("%H:%M:%S").to_string());
+                            } else {
+                                ui.label("—");
+                            }
+
+                            // Actions (Stop button)
+                            if ui.button("🛑 Stop").clicked() {
+                                if let Some(tx) = &self.command_tx {
+                                    let _ = tx.send(Command::StopTpdoListener(*tpdo_num));
+                                }
+                                tpdo_to_remove.push(*tpdo_num);
+                            }
+                            ui.end_row();
+                        }
+
+                        // Remove stopped SDO subscriptions
+                        for address in sdo_to_remove {
                             self.subscriptions.remove(&address);
+                        }
+
+                        // Remove stopped TPDO subscriptions
+                        for tpdo_num in tpdo_to_remove {
+                            self.active_tpdos.remove(&tpdo_num);
+                            // Clear field subscriptions for this TPDO
+                            self.tpdo_field_subscriptions.retain(|field_id, _| field_id.tpdo_number != tpdo_num);
                         }
                     });
             });
@@ -863,6 +1228,36 @@ impl MyApp {
                     Ok(mut writer) => {
                         // Write header
                         if let Err(e) = writer.write_record(&["Sample No", "Value"]) {
+                            eprintln!("Failed to write CSV header: {}", e);
+                        }
+
+                        // Write data
+                        for point in &subscription.plot_data {
+                            if let Err(e) = writer.write_record(&[point[0].to_string(), point[1].to_string()]) {
+                                eprintln!("Failed to write CSV record: {}", e);
+                            }
+                        }
+
+                        if let Err(e) = writer.flush() {
+                            eprintln!("Failed to flush CSV file: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to create CSV file: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    fn export_tpdo_plot_data_to_csv(&mut self, field_id: &TpdoFieldId) {
+        if let Some(subscription) = self.tpdo_field_subscriptions.get(field_id) {
+            let file_name = format!("plot_data_tpdo{}_{}.csv", field_id.tpdo_number, field_id.field_name);
+            if let Some(path) = rfd::FileDialog::new().set_file_name(&file_name).save_file() {
+                match csv::Writer::from_path(path) {
+                    Ok(mut writer) => {
+                        // Write header
+                        if let Err(e) = writer.write_record(&["Time (seconds)", "Value"]) {
                             eprintln!("Failed to write CSV header: {}", e);
                         }
 

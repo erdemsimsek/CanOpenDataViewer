@@ -1,5 +1,5 @@
 // connect.rs
-use socketcan::{CanSocket, Socket, CanFrame, StandardId, EmbeddedFrame};
+use socketcan::{CanSocket, Socket, CanFrame, EmbeddedFrame};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -8,7 +8,8 @@ use tokio::task::JoinHandle;
 use std::error::Error;
 use std::fmt;
 
-use canopen_common::{SdoRequest, SdoResponse, SdoError, parse_sdo_response};
+use canopen_common::{SdoRequest, SdoResponse, SdoError, SdoWriteRequest,
+                     parse_sdo_response, parse_sdo_write_response};
 
 #[derive(Debug)]
 pub enum CANopenError {
@@ -44,6 +45,11 @@ enum ConnectionMessage {
         request: SdoRequest,
         response_tx: oneshot::Sender<Result<SdoResponse, SdoError>>,
     },
+    SdoWriteRequest {
+        node_id: u8,
+        request: SdoWriteRequest,
+        response_tx: oneshot::Sender<Result<(), SdoError>>,
+    },
     AddNode {
         node_id: u8,
         response_tx: oneshot::Sender<Result<(), CANopenError>>,
@@ -53,13 +59,26 @@ enum ConnectionMessage {
         node_id: u8,
         response_tx: oneshot::Sender<Result<(), CANopenError>>,
     },
-    // Future: PDO configuration, NMT commands, etc.
+    SubscribeRawFrames {
+        response_tx: oneshot::Sender<mpsc::UnboundedReceiver<CanFrame>>,
+    },
 }
 
-/// Represents a pending SDO request
+/// Represents the type of SDO operation
+enum SdoOperation {
+    Read {
+        request: SdoRequest,
+        response_tx: oneshot::Sender<Result<SdoResponse, SdoError>>,
+    },
+    Write {
+        request: SdoWriteRequest,
+        response_tx: oneshot::Sender<Result<(), SdoError>>,
+    },
+}
+
+/// Represents a pending SDO request (read or write)
 struct PendingSdoRequest {
-    request: SdoRequest,
-    response_tx: oneshot::Sender<Result<SdoResponse, SdoError>>,
+    operation: SdoOperation,
     timestamp: std::time::Instant,
 }
 
@@ -113,6 +132,15 @@ pub struct CANopenConnection {
     _background_task: JoinHandle<()>,
 }
 
+impl Clone for CANopenConnection {
+    fn clone(&self) -> Self {
+        Self {
+            command_tx: self.command_tx.clone(),
+            _background_task: tokio::spawn(async {}), // Create a dummy task for the clone
+        }
+    }
+}
+
 impl CANopenConnection {
     /// Create a new CANopen connection on the specified interface
     pub async fn new(interface: &str, default_timeout: Duration) -> Result<Self, CANopenError> {
@@ -154,6 +182,38 @@ impl CANopenConnection {
             command_tx: self.command_tx.clone(),
         })
     }
+
+    /// Subscribe to raw CAN frames (for TPDO reception)
+    pub async fn subscribe_raw_frames(&self) -> Result<mpsc::UnboundedReceiver<CanFrame>, CANopenError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ConnectionMessage::SubscribeRawFrames { response_tx })
+            .map_err(|_| CANopenError::RequestFailed("Connection manager died".to_string()))?;
+
+        response_rx
+            .await
+            .map_err(|_| CANopenError::RequestFailed("Failed to get response".to_string()))
+    }
+}
+
+/// TPDO Mapping Entry - defines one object to map into a TPDO
+#[derive(Debug, Clone)]
+pub struct TpdoMapping {
+    pub index: u16,
+    pub sub_index: u8,
+    pub bit_length: u8,  // 8, 16, 32, etc.
+}
+
+/// TPDO Configuration Parameters
+#[derive(Debug, Clone)]
+pub struct TpdoConfigParams {
+    pub tpdo_number: u8,           // 1-4 typically (maps to 0x1800-0x1803 and 0x1A00-0x1A03)
+    pub cob_id: u16,               // COB-ID for this TPDO (e.g., 0x180 + node_id for TPDO1)
+    pub transmission_type: u8,     // 0xFE = event-driven, 0xFF = device profile specific, 1-240 = sync-based
+    pub inhibit_time_100us: u16,   // Minimum time between transmissions (in 100μs units)
+    pub event_timer_ms: u16,       // Periodic transmission timer (in ms, 0 = disabled)
+    pub mappings: Vec<TpdoMapping>, // Objects to map into this TPDO
 }
 
 /// Handle for communicating with a specific CANopen node
@@ -182,13 +242,141 @@ impl CANopenNodeHandle {
             .map_err(CANopenError::from)
     }
 
+    /// Send an SDO write request to this node
+    pub async fn sdo_write(&self, request: SdoWriteRequest) -> Result<(), CANopenError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ConnectionMessage::SdoWriteRequest {
+                node_id: self.node_id,
+                request,
+                response_tx,
+            })
+            .map_err(|_| CANopenError::RequestFailed("Connection manager died".to_string()))?;
+
+        response_rx
+            .await
+            .map_err(|_| CANopenError::RequestFailed("Failed to get response".to_string()))?
+            .map_err(CANopenError::from)
+    }
+
+    /// Configure a TPDO on this node via SDO writes
+    pub async fn configure_tpdo(&self, config: TpdoConfigParams) -> Result<(), CANopenError> {
+        if config.tpdo_number < 1 || config.tpdo_number > 4 {
+            return Err(CANopenError::RequestFailed(
+                "TPDO number must be 1-4".to_string()
+            ));
+        }
+
+        if config.mappings.len() > 8 {
+            return Err(CANopenError::RequestFailed(
+                "Maximum 8 objects can be mapped to a TPDO".to_string()
+            ));
+        }
+
+        // Calculate object dictionary indices
+        let comm_param_index = 0x1800 + (config.tpdo_number - 1) as u16;  // 0x1800-0x1803
+        let mapping_param_index = 0x1A00 + (config.tpdo_number - 1) as u16; // 0x1A00-0x1A03
+
+        println!("Configuring TPDO {} on node {}", config.tpdo_number, self.node_id);
+
+        // Step 1: Disable the TPDO (set bit 31 of COB-ID)
+        println!("  Step 1: Disabling TPDO...");
+        let disabled_cob_id = config.cob_id as u32 | 0x8000_0000;
+        self.sdo_write(SdoWriteRequest {
+            node_id: self.node_id,
+            index: comm_param_index,
+            subindex: 1,  // COB-ID subindex
+            data: disabled_cob_id.to_le_bytes().to_vec(),
+        }).await?;
+
+        // Step 2: Clear the mapping count (set to 0)
+        println!("  Step 2: Clearing mapping count...");
+        self.sdo_write(SdoWriteRequest {
+            node_id: self.node_id,
+            index: mapping_param_index,
+            subindex: 0,  // Number of mapped objects
+            data: vec![0],
+        }).await?;
+
+        // Step 3: Write new mappings (subindex 1-8)
+        println!("  Step 3: Writing {} mappings...", config.mappings.len());
+        for (i, mapping) in config.mappings.iter().enumerate() {
+            // Mapping format: Index (16 bits) | Subindex (8 bits) | Bit length (8 bits)
+            let mapping_value = ((mapping.index as u32) << 16)
+                              | ((mapping.sub_index as u32) << 8)
+                              | (mapping.bit_length as u32);
+
+            println!("    Mapping {}: 0x{:04X}:{:02X} ({} bits) = 0x{:08X}",
+                     i + 1, mapping.index, mapping.sub_index, mapping.bit_length, mapping_value);
+
+            self.sdo_write(SdoWriteRequest {
+                node_id: self.node_id,
+                index: mapping_param_index,
+                subindex: (i + 1) as u8,  // Mapping subindex 1-8
+                data: mapping_value.to_le_bytes().to_vec(),
+            }).await?;
+        }
+
+        // Step 4: Update the mapping count
+        println!("  Step 4: Setting mapping count to {}...", config.mappings.len());
+        self.sdo_write(SdoWriteRequest {
+            node_id: self.node_id,
+            index: mapping_param_index,
+            subindex: 0,
+            data: vec![config.mappings.len() as u8],
+        }).await?;
+
+        // Step 5: Configure TPDO communication parameters
+        println!("  Step 5: Setting transmission type to 0x{:02X}...", config.transmission_type);
+        self.sdo_write(SdoWriteRequest {
+            node_id: self.node_id,
+            index: comm_param_index,
+            subindex: 2,  // Transmission type
+            data: vec![config.transmission_type],
+        }).await?;
+
+        // Inhibit time (optional, 0 = no restriction)
+        if config.inhibit_time_100us > 0 {
+            println!("  Step 6: Setting inhibit time to {} * 100μs...", config.inhibit_time_100us);
+            self.sdo_write(SdoWriteRequest {
+                node_id: self.node_id,
+                index: comm_param_index,
+                subindex: 3,  // Inhibit time
+                data: config.inhibit_time_100us.to_le_bytes().to_vec(),
+            }).await?;
+        }
+
+        // Event timer (optional, 0 = disabled)
+        if config.event_timer_ms > 0 {
+            println!("  Step 7: Setting event timer to {} ms...", config.event_timer_ms);
+            self.sdo_write(SdoWriteRequest {
+                node_id: self.node_id,
+                index: comm_param_index,
+                subindex: 5,  // Event timer
+                data: config.event_timer_ms.to_le_bytes().to_vec(),
+            }).await?;
+        }
+
+        // Step 6: Enable the TPDO (clear bit 31 of COB-ID)
+        println!("  Final Step: Enabling TPDO with COB-ID 0x{:03X}...", config.cob_id);
+        self.sdo_write(SdoWriteRequest {
+            node_id: self.node_id,
+            index: comm_param_index,
+            subindex: 1,  // COB-ID subindex
+            data: (config.cob_id as u32).to_le_bytes().to_vec(),
+        }).await?;
+
+        println!("✓ TPDO {} configured successfully!", config.tpdo_number);
+        Ok(())
+    }
+
     /// Get the node ID for this handle
     pub fn node_id(&self) -> u8 {
         self.node_id
     }
 
     // Future methods:
-    // pub async fn configure_tpdo(&self, config: TpdoConfig) -> Result<(), CANopenError>
     // pub async fn configure_rpdo(&self, config: RpdoConfig) -> Result<(), CANopenError>
     // pub async fn send_nmt_command(&self, command: NmtCommand) -> Result<(), CANopenError>
 }
@@ -201,6 +389,7 @@ async fn connection_manager_task(
 ) {
     let mut nodes: HashMap<u8, NodeState> = HashMap::new();
     let socket = Arc::new(Mutex::new(socket));
+    let mut raw_frame_subscribers: Vec<mpsc::UnboundedSender<CanFrame>> = Vec::new();
 
     // Spawn the CAN frame reader task
     let socket_clone = socket.clone();
@@ -246,8 +435,7 @@ async fn connection_manager_task(
                     Some(ConnectionMessage::SdoRequest { node_id, request, response_tx }) => {
                         if let Some(node_state) = nodes.get_mut(&node_id) {
                             let pending_request = PendingSdoRequest {
-                                request,
-                                response_tx,
+                                operation: SdoOperation::Read { request, response_tx },
                                 timestamp: std::time::Instant::now(),
                             };
 
@@ -255,13 +443,39 @@ async fn connection_manager_task(
 
                             // Try to start the request immediately if no active request
                             if let Some(active_request) = node_state.start_next_request() {
-                                send_sdo_request(&socket, &active_request.request).await;
+                                send_sdo_operation(&socket, &active_request.operation).await;
                             }
                         } else {
                             let _ = response_tx.send(Err(SdoError::InvalidResponse(
                                 format!("Node {} not connected", node_id)
                             )));
                         }
+                    }
+
+                    Some(ConnectionMessage::SdoWriteRequest { node_id, request, response_tx }) => {
+                        if let Some(node_state) = nodes.get_mut(&node_id) {
+                            let pending_request = PendingSdoRequest {
+                                operation: SdoOperation::Write { request, response_tx },
+                                timestamp: std::time::Instant::now(),
+                            };
+
+                            node_state.queue_request(pending_request);
+
+                            // Try to start the request immediately if no active request
+                            if let Some(active_request) = node_state.start_next_request() {
+                                send_sdo_operation(&socket, &active_request.operation).await;
+                            }
+                        } else {
+                            let _ = response_tx.send(Err(SdoError::InvalidResponse(
+                                format!("Node {} not connected", node_id)
+                            )));
+                        }
+                    }
+
+                    Some(ConnectionMessage::SubscribeRawFrames { response_tx }) => {
+                        let (tx, rx) = mpsc::unbounded_channel();
+                        raw_frame_subscribers.push(tx);
+                        let _ = response_tx.send(rx);
                     }
 
                     None => break, // Channel closed
@@ -271,6 +485,12 @@ async fn connection_manager_task(
             // Handle incoming CAN frames
             frame = frame_rx.recv() => {
                 if let Some(frame) = frame {
+                    // Broadcast frame to raw frame subscribers (for TPDO listeners)
+                    raw_frame_subscribers.retain(|subscriber| {
+                        subscriber.send(frame.clone()).is_ok()
+                    });
+
+                    // Handle SDO responses
                     handle_can_frame(&mut nodes, frame).await;
                 }
             }
@@ -285,27 +505,26 @@ async fn connection_manager_task(
         for node_state in nodes.values_mut() {
             if node_state.active_request.is_none() {
                 if let Some(active_request) = node_state.start_next_request() {
-                    send_sdo_request(&socket, &active_request.request).await;
+                    send_sdo_operation(&socket, &active_request.operation).await;
                 }
             }
         }
     }
 }
 
-async fn send_sdo_request(socket: &Arc<Mutex<CanSocket>>, request: &SdoRequest) {
-    let request_id = StandardId::new(0x600 + request.node_id as u16);
-    if request_id.is_none() {
-        return; // Invalid CAN ID
-    }
-    let request_id = request_id.unwrap();
+async fn send_sdo_operation(socket: &Arc<Mutex<CanSocket>>, operation: &SdoOperation) {
+    use canopen_common::{create_sdo_request_frame, create_sdo_write_frame};
 
-    let mut data = [0u8; 8];
-    data[0] = 0x40; // SDO upload request
-    data[1] = (request.index & 0xFF) as u8;
-    data[2] = ((request.index >> 8) & 0xFF) as u8;
-    data[3] = request.subindex;
+    let frame_result = match operation {
+        SdoOperation::Read { request, .. } => {
+            create_sdo_request_frame(request)
+        }
+        SdoOperation::Write { request, .. } => {
+            create_sdo_write_frame(request)
+        }
+    };
 
-    if let Some(frame) = CanFrame::new(request_id, &data) {
+    if let Ok(frame) = frame_result {
         let socket = socket.lock().unwrap();
         let _ = socket.write_frame(&frame);
     }
@@ -323,9 +542,17 @@ async fn handle_can_frame(nodes: &mut HashMap<u8, NodeState>, frame: CanFrame) {
 
         if let Some(node_state) = nodes.get_mut(&node_id) {
             if let Some(completed_request) = node_state.complete_active_request() {
-                // Parse the response and send it back
-                let response = parse_sdo_response(frame, &completed_request.request);
-                let _ = completed_request.response_tx.send(response);
+                // Parse the response based on operation type
+                match completed_request.operation {
+                    SdoOperation::Read { request, response_tx } => {
+                        let response = parse_sdo_response(frame, &request);
+                        let _ = response_tx.send(response);
+                    }
+                    SdoOperation::Write { request, response_tx } => {
+                        let response = parse_sdo_write_response(frame, &request);
+                        let _ = response_tx.send(response);
+                    }
+                }
             }
         }
     }
@@ -336,7 +563,15 @@ async fn handle_can_frame(nodes: &mut HashMap<u8, NodeState>, frame: CanFrame) {
 async fn check_timeouts(nodes: &mut HashMap<u8, NodeState>) {
     for node_state in nodes.values_mut() {
         if let Some(timed_out_request) = node_state.check_timeout() {
-            let _ = timed_out_request.response_tx.send(Err(SdoError::Timeout));
+            // Send timeout error based on operation type
+            match timed_out_request.operation {
+                SdoOperation::Read { response_tx, .. } => {
+                    let _ = response_tx.send(Err(SdoError::Timeout));
+                }
+                SdoOperation::Write { response_tx, .. } => {
+                    let _ = response_tx.send(Err(SdoError::Timeout));
+                }
+            }
         }
     }
 }
