@@ -816,7 +816,10 @@ impl MyApp {
 
                 for (address, subscription) in &self.subscriptions {
                     // 1. Use a Frame to visually group each plot and its title.
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                    let mut capture_clicked = false;
+                    let mut plot_title = String::new();
+
+                    let frame_response = egui::Frame::group(ui.style()).show(ui, |ui| {
                         let plot_id = format!("sdo_plot_{:x}_{}", address.index, address.sub_index);
 
                         // Get human-readable name from EDS
@@ -826,7 +829,7 @@ impl MyApp {
                             .map(|sub_object| sub_object.name.clone())
                             .unwrap_or_else(|| format!("0x{:04X}:{:02X}", address.index, address.sub_index));
 
-                        let plot_title = format!("SDO - {} ({:#06X}:{})", field_name, address.index, address.sub_index);
+                        plot_title = format!("SDO - {} ({:#06X}:{})", field_name, address.index, address.sub_index);
 
                         // Add a title for the individual plot.
                         ui.label(&plot_title);
@@ -860,16 +863,7 @@ impl MyApp {
 
                         ui.horizontal(|ui| {
                             if ui.button("📸 Capture Plot").clicked() {
-                                let now = Local::now();
-                                let timestamp = now.format("%Y-%m-%d %H:%M:%S");
-                                let info = ScreenshotInfo{
-                                    filename: format!("{}_{}.png", plot_title.replace(":", "_"), timestamp),
-                                    // rect: plot_response.response.rect,
-                                    rect: ui.min_rect(),
-                                };
-
-                                let user_data = egui::UserData::new(Arc::new(info));
-                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
+                                capture_clicked = true;
                             }
 
                             if ui.button("🗑 Clear").clicked() {
@@ -881,6 +875,19 @@ impl MyApp {
                             }
                         });
                     });
+
+                    // Handle capture after we have the frame rect
+                    if capture_clicked {
+                        let now = Local::now();
+                        let timestamp = now.format("%Y-%m-%d %H:%M:%S");
+                        let info = ScreenshotInfo{
+                            filename: format!("{}_{}.png", plot_title.replace(":", "_"), timestamp),
+                            rect: frame_response.response.rect,
+                        };
+
+                        let user_data = egui::UserData::new(Arc::new(info));
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
+                    }
                 }
 
                 for address in addresses_to_clear {
@@ -899,9 +906,12 @@ impl MyApp {
                 let mut tpdo_fields_to_export = Vec::new();
 
                 for (field_id, subscription) in &self.tpdo_field_subscriptions {
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                    let mut capture_clicked = false;
+                    let mut plot_title = String::new();
+
+                    let frame_response = egui::Frame::group(ui.style()).show(ui, |ui| {
                         let plot_id = format!("tpdo_plot_{}_{}", field_id.tpdo_number, field_id.field_name);
-                        let plot_title = format!("TPDO {} - {}", field_id.tpdo_number, field_id.field_name);
+                        plot_title = format!("TPDO {} - {}", field_id.tpdo_number, field_id.field_name);
 
                         ui.label(&plot_title);
                         ui.separator();
@@ -935,15 +945,7 @@ impl MyApp {
 
                         ui.horizontal(|ui| {
                             if ui.button("📸 Capture Plot").clicked() {
-                                let now = Local::now();
-                                let timestamp = now.format("%Y-%m-%d %H:%M:%S");
-                                let info = ScreenshotInfo{
-                                    filename: format!("{}_{}.png", plot_title.replace(":", "_").replace(" - ", "_"), timestamp),
-                                    rect: ui.min_rect(),
-                                };
-
-                                let user_data = egui::UserData::new(Arc::new(info));
-                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
+                                capture_clicked = true;
                             }
 
                             if ui.button("🗑 Clear").clicked() {
@@ -955,6 +957,19 @@ impl MyApp {
                             }
                         });
                     });
+
+                    // Handle capture after we have the frame rect
+                    if capture_clicked {
+                        let now = Local::now();
+                        let timestamp = now.format("%Y-%m-%d %H:%M:%S");
+                        let info = ScreenshotInfo{
+                            filename: format!("{}_{}.png", plot_title.replace(":", "_").replace(" - ", "_"), timestamp),
+                            rect: frame_response.response.rect,
+                        };
+
+                        let user_data = egui::UserData::new(Arc::new(info));
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Screenshot(user_data));
+                    }
                 }
 
                 // Clear TPDO field plots
