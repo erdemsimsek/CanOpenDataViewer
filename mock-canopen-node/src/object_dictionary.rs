@@ -203,20 +203,16 @@ impl ObjectDictionary {
 
         // TPDO1 Mapping Parameters (0x1A00)
         // 0x1A00:00 - Number of mapped objects (UInt8)
-        self.add_static(0x1A00, 0x00, vec![0x03], SdoDataType::UInt8);
+        self.add_static(0x1A00, 0x00, vec![0x02], SdoDataType::UInt8);
 
-        // 0x1A00:01 - Mapping entry 1: Temperature (0x6000:01, 16 bits)
+        // 0x1A00:01 - Mapping entry 1: CabinTemperature (0x2000:01, 32 bits Real32)
         // Format: bits 31-16 = index, bits 15-8 = subindex, bits 7-0 = bit length
-        let mapping1: u32 = (0x6000 << 16) | (0x01 << 8) | 16;
+        let mapping1: u32 = (0x2000 << 16) | (0x01 << 8) | 32;
         self.add_static(0x1A00, 0x01, mapping1.to_le_bytes().to_vec(), SdoDataType::UInt32);
 
-        // 0x1A00:02 - Mapping entry 2: Pressure (0x6001:01, 16 bits)
-        let mapping2: u32 = (0x6001 << 16) | (0x01 << 8) | 16;
+        // 0x1A00:02 - Mapping entry 2: OutsideTemperature (0x2000:02, 32 bits Real32)
+        let mapping2: u32 = (0x2000 << 16) | (0x02 << 8) | 32;
         self.add_static(0x1A00, 0x02, mapping2.to_le_bytes().to_vec(), SdoDataType::UInt32);
-
-        // 0x1A00:03 - Mapping entry 3: Status (0x6002:01, 8 bits)
-        let mapping3: u32 = (0x6002 << 16) | (0x01 << 8) | 8;
-        self.add_static(0x1A00, 0x03, mapping3.to_le_bytes().to_vec(), SdoDataType::UInt32);
 
         // === TPDO Data Objects (synchronized with transmitted TPDO) ===
 

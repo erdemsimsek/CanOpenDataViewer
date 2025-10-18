@@ -818,7 +818,15 @@ impl MyApp {
                     // 1. Use a Frame to visually group each plot and its title.
                     egui::Frame::group(ui.style()).show(ui, |ui| {
                         let plot_id = format!("sdo_plot_{:x}_{}", address.index, address.sub_index);
-                        let plot_title = format!("SDO {:#06X}:{}", address.index, address.sub_index);
+
+                        // Get human-readable name from EDS
+                        let field_name = self.sdo_data.as_ref()
+                            .and_then(|sdo_map| sdo_map.get(&address.index))
+                            .and_then(|sdo_object| sdo_object.sub_objects.get(&address.sub_index))
+                            .map(|sub_object| sub_object.name.clone())
+                            .unwrap_or_else(|| format!("0x{:04X}:{:02X}", address.index, address.sub_index));
+
+                        let plot_title = format!("SDO - {} ({:#06X}:{})", field_name, address.index, address.sub_index);
 
                         // Add a title for the individual plot.
                         ui.label(&plot_title);
@@ -844,7 +852,7 @@ impl MyApp {
                                 let points_vec: Vec<[f64; 2]> = subscription.plot_data.iter().cloned().collect();
 
                                 let line = Line::new(PlotPoints::from(points_vec))
-                                    .name(&plot_title)
+                                    .name(&field_name)  // Use field name in legend (without hex address)
                                     .color(color);
 
                                 plot_ui.line(line);

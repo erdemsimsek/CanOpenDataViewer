@@ -21,6 +21,11 @@ impl SdoServer {
         }
     }
 
+    /// Get a reference to the object dictionary for TPDO data reads
+    pub fn object_dict(&self) -> &ObjectDictionary {
+        &self.object_dict
+    }
+
     /// Handle an incoming CAN frame
     /// Returns Some(response_frame) if this was an SDO request for us
     pub fn handle_frame(&mut self, frame: &CanFrame) -> Option<CanFrame> {

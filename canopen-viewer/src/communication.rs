@@ -298,11 +298,20 @@ fn parse_tpdos_from_eds(eds_file: &PathBuf, sdo_data: &BTreeMap<u16, SdoObject>)
         let cob_id = match config.get(&comm_section, "DefaultValue") {
             Some(value_str) => {
                 // Parse hex value (format: "0x184" or "$NODEID+0x180")
-                let cleaned = value_str.replace("$NODEID", "0").replace("+", "");
-                if let Ok(val) = if cleaned.starts_with("0x") {
-                    u32::from_str_radix(&cleaned[2..], 16)
+                // For "$NODEID+0x180", we ignore $NODEID (treat as 0) and parse the hex part
+                let to_parse = if value_str.contains("$NODEID+") {
+                    value_str.split("+").nth(1).unwrap_or("0")
+                } else if value_str.contains("+") {
+                    // Handle "NODEID+0x180" without $ (some EDS formats)
+                    value_str.split("+").nth(1).unwrap_or("0")
                 } else {
-                    cleaned.parse::<u32>()
+                    value_str.as_str()
+                };
+
+                if let Ok(val) = if to_parse.starts_with("0x") || to_parse.starts_with("0X") {
+                    u32::from_str_radix(&to_parse[2..], 16)
+                } else {
+                    to_parse.parse::<u32>()
                 } {
                     // Check valid bit (bit 31)
                     if val & 0x80000000 != 0 {
@@ -311,7 +320,7 @@ fn parse_tpdos_from_eds(eds_file: &PathBuf, sdo_data: &BTreeMap<u16, SdoObject>)
                     }
                     (val & 0x7FF) as u16
                 } else {
-                    println!("EDS: Failed to parse COB-ID for TPDO {}", tpdo_num);
+                    println!("EDS: Failed to parse COB-ID '{}' for TPDO {}", to_parse, tpdo_num);
                     continue;
                 }
             }

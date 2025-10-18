@@ -79,14 +79,12 @@ fn main() {
     println!("🚀 Mock node is running!");
     println!("   Waiting for SDO requests on COB-ID 0x{:03X}...", 0x600 + node_id as u16);
     println!("   Broadcasting TPDO1 on COB-ID 0x{:03X} every 100ms", 0x180 + node_id as u16);
+    println!("   TPDO1 contains: CabinTemperature (0x2000:01), OutsideTemperature (0x2000:02)");
     println!("   Press Ctrl+C to stop\n");
 
     // TPDO broadcasting state
     let mut last_tpdo_time = Instant::now();
     let tpdo_interval = Duration::from_millis(100);
-    let mut temperature: u16 = 2350; // 23.50°C
-    let mut pressure: u16 = 1013;    // 1013 hPa
-    let mut status: u8 = 1;           // OK
 
     // Main loop: listen for CAN frames and respond to SDO requests
     loop {
@@ -112,35 +110,36 @@ fn main() {
 
         // Broadcast TPDO periodically
         if last_tpdo_time.elapsed() >= tpdo_interval {
-            // Update test values (simulate changing sensor data)
-            temperature = (temperature + 1) % 3000; // Varies from 0 to 30.00°C
-            pressure = 1000 + (pressure - 1000 + 1) % 50; // Varies from 1000 to 1050 hPa
-            status = if status == 1 { 2 } else { 1 }; // Toggle between 1 and 2
+            // Read current values from Object Dictionary
+            // TPDO1 mapping: 0x2000:01 (CabinTemperature, Real32), 0x2000:02 (OutsideTemperature, Real32)
+            let cabin_temp = sdo_server.object_dict().get(0x2000, 0x01);
+            let outside_temp = sdo_server.object_dict().get(0x2000, 0x02);
 
-            // Create TPDO frame
-            // TPDO1 COB-ID = 0x180 + node_id
-            // Mapping: Temperature (16-bit), Pressure (16-bit), Status (8-bit)
-            let tpdo_cob_id = 0x180 + node_id as u16;
+            if let (Some((cabin_data, _)), Some((outside_data, _))) = (cabin_temp, outside_temp) {
+                // Create TPDO frame
+                // TPDO1 COB-ID = 0x180 + node_id
+                let tpdo_cob_id = 0x180 + node_id as u16;
 
-            if let Some(std_id) = StandardId::new(tpdo_cob_id) {
-                let mut data = [0u8; 8];
+                if let Some(std_id) = StandardId::new(tpdo_cob_id) {
+                    let mut data = [0u8; 8];
 
-                // Pack data in little-endian format
-                data[0] = (temperature & 0xFF) as u8;
-                data[1] = ((temperature >> 8) & 0xFF) as u8;
-                data[2] = (pressure & 0xFF) as u8;
-                data[3] = ((pressure >> 8) & 0xFF) as u8;
-                data[4] = status;
-                // Remaining bytes are padding (0)
+                    // Pack data according to TPDO mapping
+                    // Bytes 0-3: CabinTemperature (Real32, little-endian)
+                    data[0..4].copy_from_slice(&cabin_data[..4]);
+                    // Bytes 4-7: OutsideTemperature (Real32, little-endian)
+                    data[4..8].copy_from_slice(&outside_data[..4]);
 
-                if let Some(frame) = CanFrame::new(std_id, &data[..5]) {
-                    if let Err(e) = socket.write_frame(&frame) {
-                        eprintln!("⚠ Failed to send TPDO: {}", e);
-                    } else {
-                        print!("📤 TPDO1: Temp={:.2}°C, Press={}hPa, Status={}\r",
-                               temperature as f32 / 100.0, pressure, status);
-                        use std::io::Write;
-                        std::io::stdout().flush().ok();
+                    if let Some(frame) = CanFrame::new(std_id, &data) {
+                        if let Err(e) = socket.write_frame(&frame) {
+                            eprintln!("⚠ Failed to send TPDO: {}", e);
+                        } else {
+                            // Decode for display
+                            let cabin_f32 = f32::from_le_bytes([cabin_data[0], cabin_data[1], cabin_data[2], cabin_data[3]]);
+                            let outside_f32 = f32::from_le_bytes([outside_data[0], outside_data[1], outside_data[2], outside_data[3]]);
+                            print!("📤 TPDO1: CabinTemp={:.2}°C, OutsideTemp={:.2}°C\r", cabin_f32, outside_f32);
+                            use std::io::Write;
+                            std::io::stdout().flush().ok();
+                        }
                     }
                 }
             }
