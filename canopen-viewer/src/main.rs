@@ -1,5 +1,3 @@
-// main.rs
-
 mod communication;
 mod canopen;
 mod config;
@@ -94,11 +92,10 @@ struct MyApp {
     connection_status: bool,
     connection_requested: bool,
 
-    sdo_requested : bool,
-    sdo_data : Option<BTreeMap<u16, SdoObject>>,
+    sdo_requested: bool,
+    object_dictionary: Option<BTreeMap<u16, SdoObject>>,
 
-    // Storing the state of all active subscriptions
-    subscriptions : HashMap<SdoAddress, SdoSubscription>,
+    subscriptions: HashMap<SdoAddress, SdoSubscription>,
 
     // Managing the state of the pop-up configuration modal
     modal_open_for: Option<SdoAddress>,
@@ -108,33 +105,25 @@ struct MyApp {
     tpdo_search_query: String,
     sidebar_tab: SidebarTab,
 
-    // Error reporting
     error_message: Option<String>,
 
-    // Configuration and logging
     config: AppConfig,
     logger: Logger,
 
-    // UI state
     show_about_dialog: bool,
 
-    // TPDO Phase 1 - Simple display
-    tpdo_data: Vec<TpdoData>,  // Store recent TPDO messages
+    tpdo_data: Vec<TpdoData>,
     tpdo_discovery_requested: bool,
-    discovered_tpdos: Vec<communication::TpdoConfig>,  // Discovered TPDO configurations
-    active_tpdos: std::collections::HashSet<u8>,  // Set of TPDO numbers currently running
+    discovered_tpdos: Vec<communication::TpdoConfig>,
+    active_tpdos: std::collections::HashSet<u8>,
 
-    // TPDO field plotting
     tpdo_field_subscriptions: HashMap<TpdoFieldId, TpdoFieldSubscription>,
 }
 
 
 impl Default for MyApp {
     fn default() -> Self {
-        // Load configuration from file
         let config = AppConfig::load();
-
-        // Initialize logger
         let mut logger = Logger::new();
         if config.enable_logging {
             if let Some(log_dir) = config.get_log_directory() {
@@ -174,7 +163,7 @@ impl Default for MyApp {
             connection_requested: false,
 
             sdo_requested: false,
-            sdo_data: None,
+            object_dictionary: None,
 
             subscriptions: HashMap::new(),
 
@@ -206,20 +195,18 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
 
         if let Some(update) = self.update_rx.as_mut().and_then(|rx| rx.try_recv().ok()) {
-            match update{
-                Update::SdoList(map) => {
-                    self.sdo_data = Some(map);
+            match update {
+                Update::SdoList(objects) => {
+                    self.object_dictionary = Some(objects);
                 },
 
                 Update::SdoData { address, value } => {
-                    // Log SDO data
                     self.logger.log(LogEvent::SdoData {
                         index: address.index,
                         sub_index: address.sub_index,
                         value: value.clone(),
                     });
 
-                    // Update subscription metadata
                     if let Some(subscription) = self.subscriptions.get_mut(&address) {
                         let now = Local::now();
                         subscription.last_value = Some(value.clone());
@@ -242,27 +229,21 @@ impl eframe::App for MyApp {
                     }
                 }
                 Update::ConnectionFailed(error) => {
-                    // Log connection failure
                     self.logger.log(LogEvent::ConnectionFailed(error.clone()));
-
                     self.error_message = Some(format!("Connection Error: {}", error));
                     self.connection_status = false;
                 }
                 Update::ConnectionStatus(is_alive) => {
-                    // Log connection status change
                     self.logger.log(LogEvent::ConnectionStatus(is_alive));
-
                     self.connection_status = is_alive;
                 }
                 Update::SdoReadError { address, error } => {
-                    // Log SDO error
                     self.logger.log(LogEvent::SdoError {
                         index: address.index,
                         sub_index: address.sub_index,
                         error: error.clone(),
                     });
 
-                    // Update subscription status to error
                     if let Some(subscription) = self.subscriptions.get_mut(&address) {
                         subscription.status = SubscriptionStatus::Error(error.clone());
                     }
@@ -270,7 +251,6 @@ impl eframe::App for MyApp {
                     self.error_message = Some(format!("SDO Read Error [{:#06X}:{:02X}]: {}", address.index, address.sub_index, error));
                 }
                 Update::TpdoData(tpdo_data) => {
-                    // Log TPDO data
                     self.logger.log(LogEvent::TpdoData {
                         tpdo_number: tpdo_data.tpdo_number,
                         values: tpdo_data.values.clone(),
@@ -279,16 +259,13 @@ impl eframe::App for MyApp {
                     // Store TPDO data (keep last 50 messages)
                     let now = tpdo_data.timestamp;
 
-                    // Process each field in the TPDO for plotting
                     for (field_name, value_str) in &tpdo_data.values {
                         let field_id = TpdoFieldId {
                             tpdo_number: tpdo_data.tpdo_number,
                             field_name: field_name.clone(),
                         };
 
-                        // Try to parse the value as a number
                         if let Ok(numeric_value) = value_str.parse::<f64>() {
-                            // Get or create subscription for this field
                             let subscription = self.tpdo_field_subscriptions
                                 .entry(field_id.clone())
                                 .or_insert_with(|| TpdoFieldSubscription {
@@ -298,11 +275,9 @@ impl eframe::App for MyApp {
                                     start_time: now,
                                 });
 
-                            // Update last value and timestamp
                             subscription.last_value = Some(value_str.clone());
                             subscription.last_timestamp = Some(now);
 
-                            // Add to plot data
                             if subscription.plot_data.len() >= PLOT_BUFFER_SIZE {
                                 subscription.plot_data.pop_front();
                             }
@@ -320,9 +295,6 @@ impl eframe::App for MyApp {
                 }
                 Update::TpdosDiscovered(tpdos) => {
                     self.discovered_tpdos = tpdos;
-                }
-                _ => {
-
                 }
             }
         }
@@ -353,7 +325,6 @@ impl eframe::App for MyApp {
 }
 
 impl MyApp {
-    /// Draws the UI for selecting the CAN interface, with centered content.
     /// Draws the UI for selecting the CAN interface using a centered window.
     fn draw_interface_view(&mut self, ui: &mut egui::Ui) {
         egui::Window::new("Interface Selection")
@@ -538,8 +509,7 @@ impl MyApp {
             }
         }
 
-        // Auto-discover TPDOs (but don't start them) once connected and SDOs fetched
-        if !self.tpdo_discovery_requested && self.connection_status && self.sdo_data.is_some() {
+        if !self.tpdo_discovery_requested && self.connection_status && self.object_dictionary.is_some() {
             if let Some(tx) = &self.command_tx {
                 let _ = tx.send(Command::DiscoverTpdos);
                 self.tpdo_discovery_requested = true;
@@ -662,11 +632,10 @@ impl MyApp {
         });
         ui.separator();
 
-        // Scrollable list of SDOs
         egui::ScrollArea::vertical().show(ui, |ui| {
-            if let Some(sdo_data) = &self.sdo_data {
+            if let Some(object_dictionary) = &self.object_dictionary {
                 let query = self.sdo_search_query.to_lowercase();
-                for (index, sdo_object) in sdo_data {
+                for (index, sdo_object) in object_dictionary {
                     let object_name_matches = sdo_object.name.to_lowercase().contains(&query);
                     let index_matches = format!("{:#06X}", index).to_lowercase().contains(&query);
                     let any_sub_object_matches = sdo_object.sub_objects.values()
@@ -822,11 +791,10 @@ impl MyApp {
                     let frame_response = egui::Frame::group(ui.style()).show(ui, |ui| {
                         let plot_id = format!("sdo_plot_{:x}_{}", address.index, address.sub_index);
 
-                        // Get human-readable name from EDS
-                        let field_name = self.sdo_data.as_ref()
-                            .and_then(|sdo_map| sdo_map.get(&address.index))
-                            .and_then(|sdo_object| sdo_object.sub_objects.get(&address.sub_index))
-                            .map(|sub_object| sub_object.name.clone())
+                        let field_name = self.object_dictionary.as_ref()
+                            .and_then(|dict| dict.get(&address.index))
+                            .and_then(|obj| obj.sub_objects.get(&address.sub_index))
+                            .map(|sub_obj| sub_obj.name.clone())
                             .unwrap_or_else(|| format!("0x{:04X}:{:02X}", address.index, address.sub_index));
 
                         plot_title = format!("SDO - {} ({:#06X}:{})", field_name, address.index, address.sub_index);
@@ -1187,12 +1155,11 @@ impl MyApp {
                         });
                         if ui.button("Start Reading").clicked() {
                             if let Ok(interval_ms) = self.modal_interval_str.parse::<u64>() {
-                                // Look up the data type from the EDS
-                                let data_type = self.sdo_data.as_ref()
-                                    .and_then(|sdo_map| sdo_map.get(&address.index))
-                                    .and_then(|sdo_object| sdo_object.sub_objects.get(&address.sub_index))
-                                    .and_then(|sub_object| SdoDataType::from_eds_type(&sub_object.data_type))
-                                    .unwrap_or(SdoDataType::Real32); // Fallback to Real32 if type unknown
+                                let data_type = self.object_dictionary.as_ref()
+                                    .and_then(|dict| dict.get(&address.index))
+                                    .and_then(|obj| obj.sub_objects.get(&address.sub_index))
+                                    .and_then(|sub_obj| SdoDataType::from_eds_type(&sub_obj.data_type))
+                                    .unwrap_or(SdoDataType::Real32);
 
                                 if let Some(tx) = &self.command_tx {
                                     tx.send(Command::Subscribe {

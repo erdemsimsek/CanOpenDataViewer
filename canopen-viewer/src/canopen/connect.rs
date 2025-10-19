@@ -45,6 +45,7 @@ enum ConnectionMessage {
         request: SdoRequest,
         response_tx: oneshot::Sender<Result<SdoResponse, SdoError>>,
     },
+    #[allow(dead_code)]  // Reserved for future SDO write feature
     SdoWriteRequest {
         node_id: u8,
         request: SdoWriteRequest,
@@ -198,6 +199,7 @@ impl CANopenConnection {
 }
 
 /// TPDO Mapping Entry - defines one object to map into a TPDO
+#[allow(dead_code)]  // Reserved for future TPDO configuration feature
 #[derive(Debug, Clone)]
 pub struct TpdoMapping {
     pub index: u16,
@@ -206,6 +208,7 @@ pub struct TpdoMapping {
 }
 
 /// TPDO Configuration Parameters
+#[allow(dead_code)]  // Reserved for future TPDO configuration feature
 #[derive(Debug, Clone)]
 pub struct TpdoConfigParams {
     pub tpdo_number: u8,           // 1-4 typically (maps to 0x1800-0x1803 and 0x1A00-0x1A03)
@@ -243,6 +246,7 @@ impl CANopenNodeHandle {
     }
 
     /// Send an SDO write request to this node
+    #[allow(dead_code)]  // Reserved for future SDO write feature
     pub async fn sdo_write(&self, request: SdoWriteRequest) -> Result<(), CANopenError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -261,6 +265,7 @@ impl CANopenNodeHandle {
     }
 
     /// Configure a TPDO on this node via SDO writes
+    #[allow(dead_code)]  // Reserved for future TPDO configuration feature
     pub async fn configure_tpdo(&self, config: TpdoConfigParams) -> Result<(), CANopenError> {
         if config.tpdo_number < 1 || config.tpdo_number > 4 {
             return Err(CANopenError::RequestFailed(

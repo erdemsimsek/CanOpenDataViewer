@@ -7,5 +7,5 @@ pub use canopen_common::{
     SdoRequest, SdoDataType
 };
 
-pub use connect::{CANopenConnection, CANopenNodeHandle, TpdoConfigParams};
+pub use connect::{CANopenConnection, CANopenNodeHandle};
 
