@@ -11,10 +11,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0  # Disable incremental for release builds
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
@@ -35,6 +37,7 @@ jobs:
 
             ### Features
             - Real-time CANopen SDO monitoring and plotting
+            - TPDO listener with automatic data plotting
             - Comprehensive subscription management
             - Plot export (PNG screenshots and CSV data)
             - Automatic logging with timestamps
@@ -52,6 +55,8 @@ jobs:
             **Linux (Generic):**
             ```bash
             # Extract and run executable
+            tar xzf canopen-viewer-v${{ steps.get_version.outputs.version }}-x86_64-unknown-linux-gnu.tar.gz
+            cd dist
             chmod +x canopen-viewer
             ./canopen-viewer
             ```
@@ -65,7 +70,7 @@ jobs:
             1. Set up your CAN interface (physical or virtual)
             2. Run the application
             3. Select interface, node ID, and EDS file
-            4. Start monitoring and subscribe to SDO objects
+            4. Start monitoring and subscribe to SDO objects or start TPDO listeners
           draft: false
           prerelease: false
           generate_release_notes: true
@@ -73,6 +78,7 @@ jobs:
   build-linux:
     needs: create-release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         target: [x86_64-unknown-linux-gnu]
@@ -81,12 +87,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
 
       - name: Install system dependencies
         run: |
@@ -100,6 +104,13 @@ jobs:
             pkg-config \
             build-essential
 
+      # CRITICAL: Cache Cargo to avoid rebuilding dependencies
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "canopen-viewer-release"
+          cache-on-failure: false
+
       - name: Update version in Cargo.toml
         run: |
           sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' canopen-viewer/Cargo.toml
@@ -107,10 +118,7 @@ jobs:
           sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' mock-canopen-node/Cargo.toml
 
       - name: Build release binary
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release --target ${{ matrix.target }} -p canopen-viewer
+        run: cargo build --release --target ${{ matrix.target }} -p canopen-viewer
 
       - name: Create binary archive
         run: |
@@ -129,16 +137,14 @@ jobs:
   build-deb-package:
     needs: create-release
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
         run: |
@@ -154,6 +160,13 @@ jobs:
             dpkg-dev \
             fakeroot
 
+      # CRITICAL: Cache Cargo for deb builds too
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "canopen-viewer-deb"
+          cache-on-failure: false
+
       - name: Update version in Cargo.toml
         run: |
           sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' canopen-viewer/Cargo.toml
@@ -161,10 +174,7 @@ jobs:
           sed -i 's/version = "0\.1\.0"/version = "${{ needs.create-release.outputs.version }}"/' mock-canopen-node/Cargo.toml
 
       - name: Build release binary
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --release -p canopen-viewer
+        run: cargo build --release -p canopen-viewer
 
       - name: Create .deb package structure
         run: |

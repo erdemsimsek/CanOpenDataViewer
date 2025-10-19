@@ -3,20 +3,54 @@ name: Rust
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0  # Disable incremental compilation for CI (saves cache space)
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+    timeout-minutes: 15  # Prevent runaway builds
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxrandr-dev \
+          libxi-dev \
+          libgl1-mesa-dev \
+          libasound2-dev \
+          pkg-config
+
+    # THIS IS THE BIG ONE - Cargo caching saves 5-10 minutes per build!
+    - name: Cache Cargo registry and build artifacts
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: "canopen-viewer-ci"
+        cache-on-failure: true
+
     - name: Build
       run: cargo build --verbose
+
     - name: Run tests
       run: cargo test --verbose
